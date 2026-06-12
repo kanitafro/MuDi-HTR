@@ -10,6 +10,61 @@
 ## Abstract
 MuDi-HTR is a research-oriented framework for combining online stroke trajectories and offline handwritten image features for robust handwriting text recognition.
 
+## Repository structure
+
+```
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── setup.py
+├── cda_similarity
+│   ├── __init__.py
+│   └── minhash_similarity.py
+├── data
+│   ├── README.md
+│   ├── processed
+│   │   └── online
+│   │       ├── test.pt
+│   │       ├── train.pt
+│   │       └── valid.pt
+│   └── raw
+│       └── didi_dataset
+│           ├── diagrams_20200131.ndjson
+│           ├── diagrams_wo_text_20200131.ndjson
+│           ├── dot
+│           ├── png
+│           └── xdot
+├── demo
+│   ├── __init__.py
+│   └── streamlit_app.py
+├── docs
+├── experiments
+│   ├── figures
+│   ├── notebooks
+│   │   └── eda.ipynb
+│   └── results
+├── models
+│   ├── __init__.py
+│   ├── fusion
+│   │   ├── __init__.py
+│   │   └── model.py
+│   ├── offline
+│   │   ├── __init__.py
+│   │   └── model.py
+│   └── online
+│       ├── __init__.py
+│       └── model.py
+├── preprocessing
+│   ├── __init__.py
+│   ├── offline_preprocess.py
+│   └── online_preprocess.py
+├── scripts
+│   └── train.py
+└── tests
+    ├── __init__.py
+    └── test_preprocessing.py
+```
+
 ## Installation
 ```bash
 git clone https://github.com/kanitafro/MuDi-HTR.git
