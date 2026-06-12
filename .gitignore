@@ -221,4 +221,5 @@ __marimo__/
 .DS_Store
 .vscode/
 data/raw/
+data/processed/
 checkpoints/

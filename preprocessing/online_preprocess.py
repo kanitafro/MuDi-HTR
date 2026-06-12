@@ -1,96 +1,120 @@
-"""Online handwriting preprocessing utilities."""
-
-from __future__ import annotations
-
+"""Preprocessing for DIDI dataset (online handwriting)."""
+import os
 import json
-import math
-import xml.etree.ElementTree as ET
+import numpy as np
 from pathlib import Path
-from typing import Iterable
+from torch import save as torch_save
+from typing import List, Tuple, Dict, Any
 
-Point = tuple[float, float]
-Stroke = list[Point]
+def load_didi_ndjson(file_path: Path) -> List[Dict[str, Any]]:
+    """Load all entries from a DIDI .ndjson file."""
+    data = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            if line.strip():
+                data.append(json.loads(line))
+    return data
 
+def normalize_stroke_points(xs: List[float], ys: List[float], 
+                            guide_width: float, guide_height: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Normalize coordinates using the writing guide dimensions.
+    Maps [0, width] -> [-1, 1] and [0, height] -> [-1, 1].
 
-def _normalize_strokes(strokes: list[Stroke]) -> list[Stroke]:
-    """Normalize points in all strokes to [0, 1] range."""
-    if not strokes:
-        return []
+    Parameters:
+    - xs: List of x coordinates for a stroke
+    - ys: List of y coordinates for a stroke
+    - guide_width: Width of the writing guide
+    - guide_height: Height of the writing guide
+    Returns:
+    - norm_xs: Normalized x coordinates
+    - norm_ys: Normalized y coordinates
+    """
+    norm_xs = (np.array(xs) / guide_width) * 2 - 1
+    norm_ys = (np.array(ys) / guide_height) * 2 - 1
+    return norm_xs, norm_ys
 
-    xs = [x for stroke in strokes for x, _ in stroke]
-    ys = [y for stroke in strokes for _, y in stroke]
-    if not xs or not ys:
-        return []
+def preprocess_didi_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert one DIDI entry (JSON line) into a sequence of normalized strokes.
+    Parameters:
+    - entry: A dict representing one 1 from the DIDI .ndjson file, containing:
+        - 'key': unique identifier for the sample
+        - 'split': which dataset split it belongs to (train/valid/test)
+        - 'drawing': list of strokes, where each stroke is [xs, ys, ts]
+        - 'writing_guide': dict with 'width' and 'height' for normalization
 
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    range_x = max(max_x - min_x, 1e-9)
-    range_y = max(max_y - min_y, 1e-9)
+    
+    Returns: {
+        'key': str,
+        'split': str,
+        'strokes': List of (norm_x, norm_y, t, pressure_if_any),
+        'label': str (optional, if text present)
+    }
+    """
+    drawing = entry['drawing']  # list of strokes, each is [xs, ys, ts]
+    guide = entry['writing_guide']
+    width = guide['width']
+    height = guide['height']
+    
+    processed_strokes = []
+    for stroke in drawing:
+        xs, ys, ts = stroke[0], stroke[1], stroke[2]
+        # Normalize coordinates
+        norm_xs, norm_ys = normalize_stroke_points(xs, ys, width, height)
+        # Timestamps: normalize to [0,1] per stroke (optional)
+        ts_array = np.array(ts, dtype=np.float32)
+        if ts_array.max() > ts_array.min():
+            ts_norm = (ts_array - ts_array.min()) / (ts_array.max() - ts_array.min())
+        else:
+            ts_norm = np.zeros_like(ts_array)
+        # Combine into (x, y, t) per point
+        stroke_data = np.stack([norm_xs, norm_ys, ts_norm], axis=1)
+        processed_strokes.append(stroke_data)
+    
+    return {
+        'key': entry['key'],
+        'split': entry['split'],
+        'strokes': processed_strokes,
+        'label_id': entry.get('label_id'),
+        # If text label exists (in diagrams with text), add it
+        'text': entry.get('text', '')
+    }
 
-    normalized: list[Stroke] = []
-    for stroke in strokes:
-        normalized.append([
-            ((x - min_x) / range_x, (y - min_y) / range_y) for x, y in stroke
-        ])
-    return normalized
+def save_processed_dataset(input_ndjson: Path, output_dir: Path):
+    """Load DIDI ndjson, preprocess, and save by split."""
+    data = load_didi_ndjson(input_ndjson)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    for split in ['train', 'valid', 'test']:
+        split_data = [preprocess_didi_entry(e) for e in data if e.get('split') == split]
+        out_file = output_dir / f"{split}.pt"
+        torch_save(split_data, out_file)  # or use np.savez
+        print(f"Saved {len(split_data)} entries to {out_file}")
 
+def main():
+    
+    print("Current working directory:", os.getcwd())
+    print("Looking for file at:", Path("../data/raw/didi_dataset/diagrams_20200131.ndjson").absolute())
 
-def _parse_json_strokes(payload: dict) -> list[Stroke]:
-    """Parse strokes from a JSON payload."""
-    strokes_data = payload.get("strokes", payload)
-    parsed: list[Stroke] = []
-    for stroke in strokes_data:
-        points: Iterable = stroke.get("points", stroke) if isinstance(stroke, dict) else stroke
-        parsed_points: Stroke = []
-        for point in points:
-            if isinstance(point, dict):
-                x, y = point.get("x"), point.get("y")
-            else:
-                x, y = point[0], point[1]
-            if x is None or y is None:
-                continue
-            parsed_points.append((float(x), float(y)))
-        if parsed_points:
-            parsed.append(parsed_points)
-    return parsed
+    data_path = Path("../data/raw/didi_dataset/diagrams_20200131.ndjson")
+    
+    # Check if file exists
+    if not data_path.exists():
+        print(f"ERROR: File not found at {data_path.absolute()}")
+        return
+    
+    # Load first few entries to inspect
+    with open(data_path, 'r') as f:
+        first_line = f.readline()
+        sample = json.loads(first_line)
+        print("Keys in first entry:", sample.keys())
+        print("Split value:", sample.get('split'))
+        print("Writing guide:", sample.get('writing_guide'))
+    
+    # Then run your save function
+    output_path = Path("../data/processed/online")
+    save_processed_dataset(data_path, output_path)
 
-
-def _parse_inkml_strokes(root: ET.Element) -> list[Stroke]:
-    """Parse trace points from an InkML root element."""
-    parsed: list[Stroke] = []
-    for trace in root.findall(".//{*}trace"):
-        text = (trace.text or "").strip()
-        if not text:
-            continue
-        points: Stroke = []
-        for raw_point in text.split(","):
-            coords = [c for c in raw_point.strip().split() if c]
-            if len(coords) < 2:
-                continue
-            try:
-                x, y = float(coords[0]), float(coords[1])
-            except ValueError:
-                continue
-            if math.isfinite(x) and math.isfinite(y):
-                points.append((x, y))
-        if points:
-            parsed.append(points)
-    return parsed
-
-
-def parse_didi(path: str | Path) -> list[Stroke]:
-    """Load DIDI JSON/InkML strokes and return normalized stroke sequences."""
-    source = Path(path)
-    suffix = source.suffix.lower()
-
-    if suffix == ".json":
-        with source.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        strokes = _parse_json_strokes(payload)
-    elif suffix in {".inkml", ".xml"}:
-        root = ET.parse(source).getroot()
-        strokes = _parse_inkml_strokes(root)
-    else:
-        raise ValueError(f"Unsupported file format: {suffix}")
-
-    return _normalize_strokes(strokes)
+if __name__ == "__main__":
+    main()
