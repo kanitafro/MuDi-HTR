@@ -24,9 +24,10 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 │   ├── README.md
 │   ├── processed
 │   │   └── online
-│   │       ├── test.pt
-│   │       ├── train.pt
-│   │       └── valid.pt
+│   │       └── didi
+│   │           ├── test.pt
+│   │           ├── train.pt
+│   │           └── valid.pt
 │   └── raw
 │       └── didi_dataset
 │           ├── diagrams_20200131.ndjson
@@ -53,12 +54,22 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 │   │   └── model.py
 │   └── online
 │       ├── __init__.py
-│       └── model.py
+│       ├── config_pretrain.yaml
+│       ├── dataset.py
+│       ├── finetune.py
+│       ├── model.py
+│       ├── pretrain.py
+│       ├── train.py # might be obsolete
+│       ├── utils.py # might be obsolete
+│       └── visualize.py # might be out of date
 ├── preprocessing
 │   ├── __init__.py
+│   ├── didi_preprocess.py
+│   ├── iam_ondb_preprocess.py
 │   ├── offline_preprocess.py
 │   └── online_preprocess.py
 ├── scripts
+│   ├── run_offline_pipeline.py
 │   └── train.py
 └── tests
     ├── __init__.py
@@ -66,21 +77,32 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 ```
 
 ## Installation
+
+1. Get started
 ```bash
 git clone https://github.com/kanitafro/MuDi-HTR.git
 cd MuDi-HTR
-pip install -e .
+pip install -r requirements.txt
 ```
 
-## Data Preparation
-- Place source assets under `data/`.
-- Keep raw material in `data/raw/` (ignored by git).
-- Implement dataset parsing inside `preprocessing/`.
+2. Get data:
+    * DIDI - online branch
+    * OpenHand-Synth - offline branch
+    * DATASET3 - offline branch (finetuning)
 
-## Training (Online & Offline)
-- Online pipeline modules live in `models/online/`.
-- Offline pipeline modules live in `models/offline/`.
-- Use scripts in `scripts/` to launch experiments.
+3. Data Preparation
+    - Place source assets under `data/`.
+    - Keep raw material in `data/raw/` (ignored by git).
+    - Implement dataset parsing inside `preprocessing/`.
+
+4. Training (Online & Offline)
+    - Online pipeline modules live in `models/online/`.
+    - Offline pipeline modules live in `models/offline/`.
+    - Use scripts in `scripts/` to launch experiments.
+
+    ```
+    python -m models.online.train
+    ```
 
 ## Fusion
 Fusion components combining online/offline signals are in `models/fusion/`.
