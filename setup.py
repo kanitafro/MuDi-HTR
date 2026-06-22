@@ -27,5 +27,6 @@ setup(
         "jupyter",
         "pytest",
         "pyyaml",
+        "datasets",
     ],
 )
