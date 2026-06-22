@@ -1,0 +1,62 @@
+# Pretraining on DIDI dataset
+pretrain:
+  # Dataset
+  data_dir: "./data/processed/online/didi"
+  alphabet: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+  
+  # Model architecture
+  model:
+    input_size: 3
+    hidden_size: 512
+    num_layers: 3
+    num_classes: 95  # Alphabet size
+    dropout: 0.3
+  
+  # Training
+  training:
+    batch_size: 64
+    learning_rate: 0.001
+    weight_decay: 1e-5
+    epochs: 30
+    scheduler_patience: 5
+    scheduler_factor: 0.5
+    max_seq_len: 3000
+    gradient_clip: 1.0
+  
+  # Paths
+  paths:
+    checkpoint_dir: "./models/online/checkpoints/pretrain"
+    log_dir: "./runs/pretrain"
+    best_model: "./models/online/checkpoints/pretrain/best_pretrain.pth"
+
+# Fine-tuning on IAM-OnDB
+finetune:
+  # Dataset
+  data_dir: "./data/processed/online/iam_ondb"
+  alphabet: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+  
+  # Model architecture
+  model:
+    input_size: 3
+    hidden_size: 512
+    num_layers: 3
+    num_classes: 95  # Same alphabet size
+    dropout: 0.3
+  
+  # Training
+  training:
+    batch_size: 32  # Smaller for fine-tuning
+    learning_rate: 0.0001  # Lower learning rate
+    weight_decay: 1e-5
+    epochs: 20
+    scheduler_patience: 3
+    scheduler_factor: 0.5
+    max_seq_len: 3000
+    gradient_clip: 1.0
+  
+  # Paths
+  paths:
+    checkpoint_dir: "./models/online/checkpoints/finetune"
+    log_dir: "./runs/finetune"
+    best_model: "./models/online/checkpoints/finetune/best_finetune.pth"
+    pretrained_model: "./models/online/checkpoints/pretrain/best_pretrain.pth"  # Load this for fine-tuning
