@@ -364,7 +364,7 @@ def main():
     data_dir = repo_root / "data" / "raw" / "IAM-OnDB"
     line_strokes_dir = data_dir / "lineStrokes"
     ascii_dir = data_dir / "ascii"
-    output_dir = repo_root / "data" / "processed" / "iam_ondb"
+    output_dir = repo_root / "data" / "processed" / "online" / "iam_ondb"
     
     print(f"Script directory: {script_dir}")
     print(f"Repo root: {repo_root}")
