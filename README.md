@@ -85,17 +85,38 @@ cd MuDi-HTR
 pip install -r requirements.txt
 ```
 
-2. Get data:
-    * DIDI - online branch
-    * OpenHand-Synth - offline branch
-    * DATASET3 - offline branch (finetuning)
+2. **Get data**:
+    * [DIDI](https://github.com/google-research/google-research/tree/master/didi_dataset) - online branch (pretraining)
+    * [IAM-OnDB](https://fki.tic.heia-fr.ch/databases/download-the-iam-on-line-handwriting-database) - online branch (finetuning)
+    * [OpenHand-Synth](https://huggingface.co/datasets/to-be/OpenHand-Synth) - offline branch (pretraining)
+    * [GNHK](https://www.goodnotes.com/gnhk) - offline branch (finetuning)
 
-3. Data Preparation
+3. **Data Preparation**
     - Place source assets under `data/`.
     - Keep raw material in `data/raw/` (ignored by git).
     - Implement dataset parsing inside `preprocessing/`.
 
-4. Training (Online & Offline)
+    3a. ONLINE data prep
+    
+    You can call the script `online_preprocess.py` with parameter `--dataset` (from the root folder):
+    ```
+    python -m preprocessing.online_preprocess --dataset didi
+    ```
+    ```
+    python -m preprocessing.online_preprocess --dataset iam_ondb
+    ```
+
+    Or, if you want to process both datasets in one go:
+
+    ```
+    python -m preprocessing.online_preprocess
+    ```
+
+    3b. OFFLINE data prep
+
+    --TO BE ADDED---
+
+4. **Training (Online & Offline)**
     - Online pipeline modules live in `models/online/`.
     - Offline pipeline modules live in `models/offline/`.
     - Use scripts in `scripts/` to launch experiments.
