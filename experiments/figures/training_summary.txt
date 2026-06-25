@@ -1,0 +1,13 @@
+
+    ========================================
+    TRAINING SUMMARY
+    ========================================
+    Total Epochs:        20
+    Best Epoch:          15
+    Best CER:            0.8440
+    Best WER:            1.0000
+    Final CER:           0.9501
+    Final WER:           1.0000
+    Final Learning Rate: 0.000025
+    ========================================
+    

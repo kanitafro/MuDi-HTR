@@ -1,0 +1,25 @@
+iam:
+  data_dir: "data/processed/iam_ondb"
+  alphabet: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+  model:
+    input_size: 3
+    hidden_size: 512
+    num_layers: 3
+    num_classes: 95
+    dropout: 0.3
+
+  training:
+    batch_size: 32
+    learning_rate: 0.001
+    weight_decay: 1e-5
+    epochs: 40
+    scheduler_patience: 5
+    scheduler_factor: 0.5
+    max_seq_len: 5000
+    gradient_clip: 1.0
+
+  paths:
+    checkpoint_dir: "models/online/checkpoints/iam_scratch"
+    log_dir: "runs/iam_scratch"
+    best_model: "models/online/checkpoints/iam_scratch/best_iam.pth"

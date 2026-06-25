@@ -1,6 +1,5 @@
 """
-Fine-tuning script for online handwriting recognition on IAM-OnDB.
-Loads a pretrained model from DIDI and fine-tunes on IAM-OnDB.
+Training script for IAM-OnDB dataset (from scratch, no pretraining).
 """
 
 import torch
@@ -21,10 +20,8 @@ from models.online.dataset import OnlineHandwritingDataset, CTCLabelEncoder
 from models.online.train import evaluate, train_one_epoch
 from models.online.visualize import TrainingVisualizer, generate_report_summary
 
-# pip install pyyaml tensorboard tqdm torch numpy pandas matplotlib seaborn pathlib scikit-learn wandb
 
 def load_config(config_path):
-    """Load YAML configuration."""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
@@ -32,45 +29,38 @@ def load_config(config_path):
 
 def main():
     # Load configuration
-    config_path = Path(__file__).parent / "config_finetune.yaml"
-    config = load_config(config_path)['finetune']
+    config_path = Path(__file__).parent / "config_iam.yaml"
+    config = load_config(config_path)['iam']
 
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Get project root
-    script_dir = Path(__file__).parent          # models/online/
-    repo_root = script_dir.parent.parent        # MuDi-HTR/
+    script_dir = Path(__file__).parent
+    repo_root = script_dir.parent.parent
 
-    # Build absolute paths
+    # Build paths
     data_dir = repo_root / config['data_dir']
     checkpoint_dir = repo_root / config['paths']['checkpoint_dir']
     log_dir = repo_root / config['paths']['log_dir']
-    pretrained_path = repo_root / config['paths']['pretrained_model']
 
-    print(f"Repo root: {repo_root}")
     print(f"Data directory: {data_dir}")
-    print(f"Pretrained model path: {pretrained_path}")
     print(f"Checkpoint directory: {checkpoint_dir}")
 
-    # Create directories
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Define alphabet (should match pretraining alphabet)
+    # Alphabet
     alphabet = list(config['alphabet'])
     print(f"Alphabet size (including blank at index 0): {len(alphabet)}")
 
-    # Create dataset and dataloader
+    # Load datasets
     max_seq_len = config['training']['max_seq_len']
-
     print("\nLoading IAM-OnDB datasets...")
     train_dataset = OnlineHandwritingDataset(data_dir, 'train', max_seq_len, dataset_name='iam_ondb')
     val_dataset = OnlineHandwritingDataset(data_dir, 'valid', max_seq_len, dataset_name='iam_ondb')
     test_dataset = OnlineHandwritingDataset(data_dir, 'test', max_seq_len, dataset_name='iam_ondb')
 
-    # Use num_workers=0 for Windows, can increase on Linux/Mac
     num_workers = 0 if sys.platform == 'win32' else 4
 
     train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'],
@@ -83,7 +73,7 @@ def main():
                              shuffle=False, collate_fn=test_dataset.collate_fn,
                              num_workers=num_workers, pin_memory=True)
 
-    # Initialize model (same architecture as pretraining)
+    # Initialize model (from scratch)
     model = OnlineHTRModel(
         input_size=config['model']['input_size'],
         hidden_size=config['model']['hidden_size'],
@@ -92,39 +82,14 @@ def main():
         dropout=config['model']['dropout']
     ).to(device)
 
-    # Load pretrained weights
-    if pretrained_path.exists():
-        print(f"Loading pretrained weights from: {pretrained_path}")
-        checkpoint = torch.load(pretrained_path, weights_only=False)
-        
-        # Load state dict, ignoring mismatched keys if any
-        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        print(f"✅ Loaded pretrained model from epoch {checkpoint.get('epoch', '?')}")
-        print(f"   Pretrained CER: {checkpoint.get('val_cer', 'N/A')}")
-        
-        # 🚀 CRITICAL: Reinitialize the final linear layer (classification head)
-        print("\n🔄 Reinitializing output layer for English text...")
-        # Save the number of input features to the fc layer
-        in_features = model.fc.in_features
-        out_features = model.fc.out_features
-        
-        # Reinitialize the layer
-        model.fc = nn.Linear(in_features, out_features)
-        nn.init.xavier_uniform_(model.fc.weight)
-        nn.init.zeros_(model.fc.bias)
-        model.fc = model.fc.to(device)
-        print(f"✅ Output layer reinitialized (in: {in_features}, out: {out_features})")
-    else:
-        print(f"⚠️  Pretrained model not found at: {pretrained_path}")
-        print("   Starting from scratch...")
-
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print("✅ Model initialized from scratch (no pretraining)")
 
     # Initialize label encoder and decoder
     label_encoder = CTCLabelEncoder(alphabet)
     decoder = CTCDecoder(alphabet, blank_idx=0)
 
-    # Use lower learning rate for fine-tuning
+    # Optimizer with higher initial learning rate
     optimizer = optim.Adam(model.parameters(),
                            lr=float(config['training']['learning_rate']),
                            weight_decay=float(config['training']['weight_decay']))
@@ -135,32 +100,26 @@ def main():
 
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
-    # Initialize visualizer
-    visualizer = TrainingVisualizer(Path("experiments/figures"))
+    # Visualizer
+    visualizer = TrainingVisualizer(Path("experiments/figures_iam"))
     writer = SummaryWriter(log_dir)
 
-    # Training loop
     best_val_cer = float('inf')
-    print(f"\n🚀 Starting fine-tuning on IAM-OnDB for {config['training']['epochs']} epochs...")
+    print(f"\n🚀 Training IAM-OnDB from scratch for {config['training']['epochs']} epochs...")
 
     for epoch in range(1, config['training']['epochs'] + 1):
         print(f"\nEpoch {epoch}/{config['training']['epochs']}")
 
-        # Train one epoch
         train_loss = train_one_epoch(model, train_loader, optimizer,
                                      criterion, device, label_encoder, config)
 
-        # Evaluate on validation
         val_cer, val_wer = evaluate(model, val_loader, decoder, device, label_encoder)
 
-        # Update learning rate
         scheduler.step(val_cer)
         current_lr = optimizer.param_groups[0]['lr']
 
-        # Update visualizer
         visualizer.update(epoch, train_loss, val_cer, val_wer, current_lr)
 
-        # Log metrics
         print(f"Train Loss: {train_loss:.4f}")
         print(f"Val CER: {val_cer:.4f}, Val WER: {val_wer:.4f}")
         print(f"Learning Rate: {current_lr:.6f}")
@@ -170,10 +129,9 @@ def main():
         writer.add_scalar('WER/val', val_wer, epoch)
         writer.add_scalar('Learning_Rate', current_lr, epoch)
 
-        # Save best model
         if val_cer < best_val_cer:
             best_val_cer = val_cer
-            best_model_path = checkpoint_dir / "best_finetune.pth"
+            best_model_path = checkpoint_dir / "best_iam.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -183,9 +141,8 @@ def main():
                 'config': config,
                 'alphabet': alphabet
             }, best_model_path)
-            print(f"✅ Saved best fine-tuned model with CER: {val_cer:.4f}")
+            print(f"✅ Saved best model with CER: {val_cer:.4f}")
 
-        # Save checkpoint every 5 epochs
         if epoch % 5 == 0:
             checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
             torch.save({
@@ -198,7 +155,7 @@ def main():
                 'alphabet': alphabet
             }, checkpoint_path)
 
-    # Final evaluation on test set
+    # Final test
     print("\n=== Final Test Evaluation ===")
     checkpoint = torch.load(best_model_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -206,23 +163,12 @@ def main():
     print(f"Test CER: {test_cer:.4f}")
     print(f"Test WER: {test_wer:.4f}")
 
-    # Generate all plots from the visualizer
-    print("\n📊 Generating visualization plots...")
     visualizer.plot_all(save=True, show=False)
-
-    # Print summary
     summary = generate_report_summary(visualizer.metrics)
     print(summary)
 
-    # Save summary to file
-    summary_path = Path("experiments/figures/training_summary.txt")
-    with open(summary_path, 'w') as f:
-        f.write(summary)
-    print(f"✅ Saved summary to {summary_path}")
-
     writer.close()
-    print("\n✅ Fine-tuning complete!")
-    print(f"Best model saved to: {best_model_path}")
+    print("\n✅ Training complete!")
 
 
 if __name__ == "__main__":

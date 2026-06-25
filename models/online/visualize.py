@@ -9,7 +9,12 @@ import torch
 from pathlib import Path
 import json
 from typing import Dict, List, Optional
+import sys
 
+# Add parent directory to path for imports
+#sys.path.append(str(Path(__file__).parent.parent.parent))
+repo_root = Path(__file__).parent.parent
+figs_dir = repo_root / "experiments" / "figures"
 
 class TrainingVisualizer:
     """
@@ -326,7 +331,7 @@ if __name__ == "__main__":
     import numpy as np
     
     # Create dummy metrics
-    visualizer = TrainingVisualizer(Path("./experiments/figures"))
+    visualizer = TrainingVisualizer(figs_dir)
     
     for epoch in range(1, 21):
         train_loss = 5.0 * np.exp(-epoch/10) + 0.5
