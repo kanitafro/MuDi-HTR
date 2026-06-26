@@ -1,3 +1,4 @@
+# preprocessing/utils.py
 """Shared preprocessing utilities for online handwriting datasets."""
 
 import json
@@ -55,3 +56,102 @@ def save_processed_data(data: List[Dict], output_dir: Path, split: str):
 def get_text_length(text: str) -> int:
     """Get the length of a text string for CTC."""
     return len(text)
+
+# ---------------------------------------------------------
+# Extract rare files if needed (for ISGL dataset)
+# ---------------------------------------------------------
+
+import os
+from pathlib import Path
+
+# Try to import patool for universal archive extraction
+try:
+    import patoolib
+    HAS_PATOOL = True
+except ImportError:
+    HAS_PATOOL = False
+    print("patool not found. Installing...")
+    os.system("pip install patool")
+    try:
+        import patoolib
+        HAS_PATOOL = True
+    except ImportError:
+        print("Failed to install patool. Trying rarfile...")
+
+# Fallback: try rarfile
+if not HAS_PATOOL:
+    try:
+        import rarfile
+        HAS_RARFILE = True
+    except ImportError:
+        HAS_RARFILE = False
+        print("rarfile not found. Run: pip install rarfile")
+
+
+def extract_archives(root_dir: Path):
+    """
+    Extract all .rar and .zip files in the directory tree.
+    """
+    extraction_base = root_dir / "extracted"
+    extraction_base.mkdir(parents=True, exist_ok=True)
+    
+    # Find all archives
+    archives = list(root_dir.rglob("*.rar")) + list(root_dir.rglob("*.zip"))
+    
+    if not archives:
+        print("No archives found to extract.")
+        return extraction_base
+    
+    print(f"Found {len(archives)} archives to extract.")
+    
+    for archive_path in archives:
+        # Create output folder name
+        rel_path = archive_path.relative_to(root_dir)
+        output_name = rel_path.with_suffix("").stem
+        output_dir = extraction_base / rel_path.parent / output_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Skip if already extracted (check if there are files)
+        if any(output_dir.iterdir()):
+            print(f"⏭️  Already extracted: {archive_path.name}")
+            continue
+        
+        print(f"Extracting: {archive_path.name} -> {output_dir}")
+        
+        if HAS_PATOOL:
+            try:
+                patoolib.extract_archive(str(archive_path), outdir=str(output_dir))
+                print(f"✅ Extracted: {archive_path.name}")
+            except Exception as e:
+                print(f"❌ Error extracting {archive_path}: {e}")
+        elif HAS_RARFILE:
+            try:
+                with rarfile.RarFile(archive_path) as rf:
+                    rf.extractall(output_dir)
+                print(f"✅ Extracted: {archive_path.name}")
+            except Exception as e:
+                print(f"❌ Error extracting {archive_path}: {e}")
+        else:
+            print("❌ No archive extraction library available.")
+            print("   Please install: pip install patool")
+            print("   Or install rarfile: pip install rarfile")
+            return extraction_base
+    
+    return extraction_base
+
+
+def extract_main():
+    isgl_dir = Path("data/raw/ISGL")
+    
+    if not isgl_dir.exists():
+        print(f"❌ ISGL directory not found: {isgl_dir}")
+        return
+    
+    print("📦 Extracting ISGL archives...")
+    extracted_dir = extract_archives(isgl_dir)
+    
+    # Show what was extracted
+    print("\n📁 Extracted files:")
+    for f in extracted_dir.rglob("*"):
+        if f.is_file():
+            print(f"  {f.relative_to(extracted_dir)}")

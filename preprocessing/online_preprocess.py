@@ -9,7 +9,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess online handwriting datasets")
-    parser.add_argument('--dataset', choices=['didi', 'iam_ondb', 'all'], 
+    parser.add_argument('--dataset', choices=['didi', 'iam_ondb', 'isgl', 'all'], 
                        default='didi', help='Dataset to preprocess')
     parser.add_argument('--force', action='store_true', 
                        help='Force reprocessing even if data exists')
@@ -29,6 +29,11 @@ def main():
         print("\n📁 Preprocessing IAM-OnDB dataset...")
         from preprocessing.iam_ondb_preprocess import main as iam_main
         iam_main()
+    
+    if args.dataset in ['isgl', 'all']:
+        print("\n📁 Preprocessing ISGL dataset...")
+        from preprocessing.isgl_preprocess import main as isgl_main
+        isgl_main()
     
     print("\n" + "="*60)
     print("✅ All preprocessing complete!")
