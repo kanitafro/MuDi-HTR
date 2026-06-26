@@ -1,6 +1,6 @@
 """Offline CRNN training for MuDi-HTR.
 
-this script follows the project plan:
+This script follows the project plan in a compact way:
 - stage 1: pretrain on OpenHand-Synth
 - stage 2: fine-tune on GNHK
 - track CER/WER
@@ -146,6 +146,29 @@ def greedy_decode(logits: torch.Tensor, encoder) -> list[str]:
     return [encoder.decode(sequence) for sequence in token_ids]
 
 
+def load_checkpoint(
+    checkpoint_path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, float] | None:
+    """Load checkpoint and return (start_epoch, best_val_cer). Returns None if no checkpoint."""
+    if not checkpoint_path.exists():
+        return None
+    
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint.get("epoch", 0) + 1
+        best_val_cer = checkpoint.get("best_val_cer", float("inf"))
+        print(f"✅ Resumed from checkpoint: epoch {checkpoint.get('epoch')}, best CER {best_val_cer:.4f}")
+        return start_epoch, best_val_cer
+    except Exception as e:
+        print(f"⚠️ Failed to load checkpoint {checkpoint_path}: {e}")
+        return None
+
+
 def run_epoch(
     model: nn.Module,
     dataloader,
@@ -199,6 +222,11 @@ def run_epoch(
         all_references.extend(references)
         total_loss += float(loss.item()) * images.size(0)
         total_samples += images.size(0)
+        
+        # ✅ CRITICAL: Clear GPU memory between batches to prevent OOM
+        del images, targets, target_lengths, logits, log_probs, loss
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     avg_loss = total_loss / max(1, total_samples)
     cer, wer = compute_cer_wer(all_predictions, all_references)
@@ -261,10 +289,16 @@ def fit_stage(
     use_amp = device.type == "cuda"
     scaler = GradScaler(enabled=use_amp) if use_amp else None
 
+    # ✅ CRITICAL: Load checkpoint and resume training
     best_val_cer = float("inf")
+    start_epoch = 1
+    resume_result = load_checkpoint(checkpoint_path, model, optimizer, device)
+    if resume_result is not None:
+        start_epoch, best_val_cer = resume_result
+    
     history: list[dict] = []
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         train_metrics = run_epoch(model, train_loader, criterion, optimizer, encoder, device, use_amp, scaler)
         val_metrics = run_epoch(model, val_loader, criterion, None, encoder, device, False, None)
         history.append({"epoch": epoch, "train": train_metrics, "val": val_metrics})
@@ -291,6 +325,10 @@ def fit_stage(
                 },
                 checkpoint_path,
             )
+        
+        # ✅ CRITICAL: Clear GPU memory after each epoch
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     return {
         "best_val_cer": best_val_cer,
