@@ -69,7 +69,7 @@ def _save_preview_grid(
 def process_data_split(
     dataset_name: str,
     split_name: str,
-    num_samples: int,
+    num_samples: int | None,
     image_size: tuple[int, int],
     augment_train: bool,
     preview_count: int,
@@ -88,43 +88,46 @@ def process_data_split(
     preview_images: list[np.ndarray] = []
     processed_count = 0
 
-    for index, item in enumerate(tqdm(dataset, total=num_samples)):
-        if index >= num_samples:
-            break
+    # ✅ CRITICAL: Use TemporaryDirectory for auto cleanup (fixes Windows file handle leak)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        
+        for index, item in enumerate(tqdm(dataset, total=num_samples if num_samples and num_samples > 0 else None)):
+            if num_samples and num_samples > 0 and index >= num_samples:
+                break
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_path = Path(temp_file.name)
+            temp_path = temp_dir_path / f"sample_{index}.png"
 
-        try:
-            item["image"].save(temp_path)
-            processed_np = preprocess_image(
-                temp_path,
-                image_size=image_size,
-                augment=use_augmentation,
-                rng=rng,
-            )
-            tensor_data = torch.tensor(processed_np, dtype=torch.float32).unsqueeze(0)
-            text = item.get("text", "")
+            try:
+                item["image"].save(temp_path)
+                processed_np = preprocess_image(
+                    temp_path,
+                    image_size=image_size,
+                    augment=use_augmentation,
+                    rng=rng,
+                )
+                tensor_data = torch.tensor(processed_np, dtype=torch.float32).unsqueeze(0)
+                text = item.get("text", "")
 
-            torch.save(
-                {
-                    "image": tensor_data,
-                    "text": text,
-                    "dataset": dataset_name,
-                    "split": split_name,
-                    # Keep a stable stream identifier instead of the deleted temp file path.
-                    "source_path": f"hf://{dataset_name}/{split_name}/{index}",
-                },
-                output_dir / f"sample_{index}.pt",
-            )
+                torch.save(
+                    {
+                        "image": tensor_data,
+                        "text": text,
+                        "dataset": dataset_name,
+                        "split": split_name,
+                        "source_path": f"hf://{dataset_name}/{split_name}/{index}",
+                    },
+                    output_dir / f"sample_{index}.pt",
+                )
 
-            if len(preview_images) < preview_count:
-                preview_images.append(processed_np)
+                if len(preview_images) < preview_count:
+                    preview_images.append(processed_np)
 
-            processed_count += 1
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+                processed_count += 1
+            finally:
+                # ✅ Clean up temp file if it exists (auto-cleanup by TemporaryDirectory at exit)
+                if temp_path.exists():
+                    temp_path.unlink()
 
     preview_path = FIGURES_ROOT / safe_dataset_name / f"{split_name}_preview.png"
     _save_preview_grid(preview_images, preview_path)
@@ -174,8 +177,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples-per-split",
         type=int,
-        default=1000,
-        help="Maximum number of streamed samples per split.",
+        default=0,
+        help="Maximum number of streamed samples per split. Use 0 to process the full split.",
     )
     parser.add_argument(
         "--height",
