@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,10 @@ from datasets import load_dataset
 from PIL import Image
 from tqdm import tqdm
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from preprocessing.offline_preprocess import preprocess_image
 
 
@@ -21,6 +26,17 @@ OUTPUT_ROOT = Path("data/processed/offline")
 FIGURES_ROOT = Path("experiments/figures/offline")
 DEFAULT_DATASET = "to-be/OpenHand-Synth"
 DEFAULT_SPLITS = ("train", "test")
+DEFAULT_DATASET_SPECS = (f"{DEFAULT_DATASET}:train,test",)
+
+
+def dataset_slug(dataset_name: str) -> str:
+    """Map a source dataset id to a stable output folder name."""
+    lowered = dataset_name.lower()
+    if "openhand" in lowered:
+        return "openhand_synth"
+    if "gnhk" in lowered:
+        return "gnhk"
+    return dataset_name.replace("/", "_").replace("-", "_").lower()
 
 
 def _save_preview_grid(
@@ -63,7 +79,7 @@ def process_data_split(
     print(f"Streaming dataset='{dataset_name}' split='{split_name}' from Hugging Face...")
     dataset = load_dataset(dataset_name, split=split_name, streaming=True)
 
-    safe_dataset_name = dataset_name.replace("/", "_")
+    safe_dataset_name = dataset_slug(dataset_name)
     output_dir = OUTPUT_ROOT / safe_dataset_name / split_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,6 +155,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run offline preprocessing from Hugging Face streams.")
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="Hugging Face dataset id.")
     parser.add_argument(
+        "--dataset-name",
+        default=None,
+        help="Stable output folder name under data/processed/offline (defaults to an inferred slug).",
+    )
+    parser.add_argument(
+        "--dataset-spec",
+        action="append",
+        default=[],
+        help="Dataset spec in the form dataset_id:split1,split2. Repeat for multiple datasets.",
+    )
+    parser.add_argument(
         "--splits",
         nargs="+",
         default=list(DEFAULT_SPLITS),
@@ -182,18 +209,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_dataset_specs(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
+    """Build dataset/split pairs from CLI arguments."""
+    if args.dataset_spec:
+        dataset_specs: list[tuple[str, list[str]]] = []
+        for spec in args.dataset_spec:
+            if ":" not in spec:
+                raise ValueError(
+                    f"Invalid --dataset-spec '{spec}'. Expected format dataset_id:split1,split2"
+                )
+            dataset_name, split_text = spec.split(":", 1)
+            splits = [split.strip() for split in split_text.split(",") if split.strip()]
+            if not dataset_name or not splits:
+                raise ValueError(
+                    f"Invalid --dataset-spec '{spec}'. Dataset name and at least one split are required."
+                )
+            dataset_specs.append((dataset_name, splits))
+        return dataset_specs
+
+    return [(args.dataset, list(args.splits))]
+
+
 if __name__ == "__main__":
     args = parse_args()
-    target_size = (args.height, args.width)
-
-    for split in args.splits:
-        process_data_split(
-            args.dataset,
-            split,
-            num_samples=args.samples_per_split,
-            image_size=target_size,
-            augment_train=args.augment_train,
-            preview_count=args.preview_count,
-            seed=args.seed,
+    if args.dataset_name is not None:
+        print(
+            f"Using output folder slug '{args.dataset_name}' is not required anymore; "
+            "folder names are inferred from the dataset id."
         )
+    target_size = (args.height, args.width)
+    dataset_specs = parse_dataset_specs(args)
+
+    for dataset_name, splits in dataset_specs:
+        for split in splits:
+            process_data_split(
+                dataset_name,
+                split,
+                num_samples=args.samples_per_split,
+                image_size=target_size,
+                augment_train=args.augment_train,
+                preview_count=args.preview_count,
+                seed=args.seed,
+            )
     print("Offline data processing complete.")
