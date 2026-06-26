@@ -45,6 +45,16 @@ class CRNN(nn.Module):
         self.classifier = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # ✅ CRITICAL: Validate input at entry point
+        if x.ndim != 4:
+            raise ValueError(f"Expected 4D input (B, C, H, W), got shape {x.shape}")
+        if x.shape[1] != 1:
+            raise ValueError(f"Expected 1 channel (grayscale), got {x.shape[1]}")
+        if x.shape[2] != 128 or x.shape[3] != 512:
+            raise ValueError(f"Expected (128, 512) input size, got {x.shape[2:]}")
+        if x.dtype != torch.float32:
+            raise TypeError(f"Expected float32 input, got {x.dtype}")
+        
         features = self.cnn(x)
         features = self.final_pool(features)
 
