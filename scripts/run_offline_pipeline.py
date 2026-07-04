@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,11 +21,26 @@ if str(PROJECT_ROOT) not in sys.path:
 from preprocessing.offline_preprocess import preprocess_image
 
 
+
 OUTPUT_ROOT = Path("data/processed/offline")
 FIGURES_ROOT = Path("experiments/figures/offline")
+
+
 DEFAULT_DATASET = "to-be/OpenHand-Synth"
-DEFAULT_SPLITS = ("train", "test")
-DEFAULT_DATASET_SPECS = (f"{DEFAULT_DATASET}:train,test",)
+DEFAULT_SPLITS = ("train", "val")
+DEFAULT_DATASET_SPECS = (
+    "to-be/OpenHand-Synth:train,val",
+    "Voxel51/iam_handwriting_finevision:train",
+)
+
+
+SOURCE_SPLIT_ALIASES = {
+    "val": ("validation", "valid", "test"),
+    "validation": ("validation", "valid", "test"),
+    "valid": ("valid", "validation", "test"),
+    "test": ("test", "validation", "valid"),
+    "train": ("train",),
+}
 
 
 def dataset_slug(dataset_name: str) -> str:
@@ -34,9 +48,53 @@ def dataset_slug(dataset_name: str) -> str:
     lowered = dataset_name.lower()
     if "openhand" in lowered:
         return "openhand_synth"
+    if "voxel51" in lowered and "finevision" in lowered:
+        return "iam_handwriting_finevision"
     if "gnhk" in lowered:
         return "gnhk"
     return dataset_name.replace("/", "_").replace("-", "_").lower()
+
+
+def normalize_split_name(split_name: str) -> str:
+    """Map user-facing split names to folder names used by training."""
+    lowered = split_name.strip().lower()
+    if lowered in {"validation", "valid"}:
+        return "val"
+    return lowered
+
+
+def build_output_dir(dataset_name: str, split_name: str) -> Path:
+    """Return the exact on-disk directory for a processed dataset split."""
+    return OUTPUT_ROOT / dataset_slug(dataset_name) / normalize_split_name(split_name)
+
+
+def resolve_source_split_name(dataset_name: str, split_name: str) -> str:
+    """Resolve the split name to use when streaming from Hugging Face."""
+    split_key = normalize_split_name(split_name)
+    candidates = SOURCE_SPLIT_ALIASES.get(split_key, (split_key,))
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            load_dataset(dataset_name, split=candidate, streaming=True)
+            return candidate
+        except Exception as error:  # pragma: no cover - fallback path
+            last_error = error
+
+    if last_error is not None:
+        raise last_error
+    return split_key
+
+
+def extract_transcription(item: dict) -> str:
+    """Extract the ground-truth transcription from a dataset row."""
+    if "assistant" in item and item["assistant"] is not None:
+        return str(item["assistant"])
+    if "text" in item and item["text"] is not None:
+        return str(item["text"])
+    if "label" in item and item["label"] is not None:
+        return str(item["label"])
+    return ""
 
 
 def _save_preview_grid(
@@ -76,14 +134,19 @@ def process_data_split(
     seed: int,
 ) -> None:
     """Stream one split from Hugging Face and save processed PyTorch samples."""
-    print(f"Streaming dataset='{dataset_name}' split='{split_name}' from Hugging Face...")
-    dataset = load_dataset(dataset_name, split=split_name, streaming=True)
+    source_split_name = resolve_source_split_name(dataset_name, split_name)
+    print(
+        f"Streaming dataset='{dataset_name}' source split='{source_split_name}' "
+        f"-> output split='{normalize_split_name(split_name)}'..."
+    )
+    dataset = load_dataset(dataset_name, split=source_split_name, streaming=True)
 
     safe_dataset_name = dataset_slug(dataset_name)
-    output_dir = OUTPUT_ROOT / safe_dataset_name / split_name
+    normalized_split_name = normalize_split_name(split_name)
+    output_dir = build_output_dir(dataset_name, split_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    use_augmentation = augment_train and split_name.lower() == "train"
+    use_augmentation = augment_train and normalized_split_name == "train"
     rng = np.random.default_rng(seed)
     preview_images: list[np.ndarray] = []
     processed_count = 0
@@ -103,18 +166,19 @@ def process_data_split(
                 temp_path,
                 image_size=image_size,
                 augment=use_augmentation,
+                binarize=True,
                 rng=rng,
             )
             tensor_data = torch.tensor(processed_np, dtype=torch.float32).unsqueeze(0)
-            text = item.get("text", "")
+            text = extract_transcription(item)
 
             torch.save(
                 {
                     "image": tensor_data,
                     "text": text,
                     "dataset": dataset_name,
-                    "split": split_name,
-                    "source_path": f"hf://{dataset_name}/{split_name}/{index}",
+                    "split": normalized_split_name,
+                    "source_path": f"hf://{dataset_name}/{source_split_name}/{index}",
                 },
                 output_dir / f"sample_{index}.pt",
             )
@@ -132,7 +196,7 @@ def process_data_split(
 
     manifest = {
         "dataset": dataset_name,
-        "split": split_name,
+        "split": normalized_split_name,
         "num_samples": processed_count,
         "image_size": {"height": image_size[0], "width": image_size[1]},
         "augmentation": {
@@ -140,6 +204,7 @@ def process_data_split(
             "rotation_degrees": 5.0,
             "scale_delta": 0.10,
         },
+        "binarization": "otsu",
         "preview_figure": str(preview_path),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "source": "huggingface_streaming",
@@ -170,7 +235,7 @@ def parse_args() -> argparse.Namespace:
         "--splits",
         nargs="+",
         default=list(DEFAULT_SPLITS),
-        help="Dataset splits to process, e.g. train validation test.",
+        help="Dataset splits to process, e.g. train val test.",
     )
     parser.add_argument(
         "--samples-per-split",
@@ -213,22 +278,27 @@ def parse_args() -> argparse.Namespace:
 def parse_dataset_specs(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
     """Build dataset/split pairs from CLI arguments."""
     if args.dataset_spec:
-        dataset_specs: list[tuple[str, list[str]]] = []
-        for spec in args.dataset_spec:
-            if ":" not in spec:
-                raise ValueError(
-                    f"Invalid --dataset-spec '{spec}'. Expected format dataset_id:split1,split2"
-                )
-            dataset_name, split_text = spec.split(":", 1)
-            splits = [split.strip() for split in split_text.split(",") if split.strip()]
-            if not dataset_name or not splits:
-                raise ValueError(
-                    f"Invalid --dataset-spec '{spec}'. Dataset name and at least one split are required."
-                )
-            dataset_specs.append((dataset_name, splits))
-        return dataset_specs
+        return parse_dataset_spec_strings(args.dataset_spec)
 
     return [(args.dataset, list(args.splits))]
+
+
+def parse_dataset_spec_strings(dataset_specs: list[str]) -> list[tuple[str, list[str]]]:
+    """Parse raw dataset spec strings into (dataset_name, splits) tuples."""
+    parsed_specs: list[tuple[str, list[str]]] = []
+    for spec in dataset_specs:
+        if ":" not in spec:
+            raise ValueError(
+                f"Invalid dataset spec '{spec}'. Expected format dataset_id:split1,split2"
+            )
+        dataset_name, split_text = spec.split(":", 1)
+        splits = [split.strip() for split in split_text.split(",") if split.strip()]
+        if not dataset_name or not splits:
+            raise ValueError(
+                f"Invalid dataset spec '{spec}'. Dataset name and at least one split are required."
+            )
+        parsed_specs.append((dataset_name, splits))
+    return parsed_specs
 
 
 if __name__ == "__main__":
@@ -239,7 +309,10 @@ if __name__ == "__main__":
             "folder names are inferred from the dataset id."
         )
     target_size = (args.height, args.width)
-    dataset_specs = parse_dataset_specs(args)
+    dataset_specs = parse_dataset_specs(args) if args.dataset_spec else parse_dataset_spec_strings(list(DEFAULT_DATASET_SPECS))
+
+    if not args.dataset_spec and args.dataset != DEFAULT_DATASET:
+        dataset_specs = [(args.dataset, list(args.splits))]
 
     for dataset_name, splits in dataset_specs:
         for split in splits:
