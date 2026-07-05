@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from random import Random
 from pathlib import Path
 from typing import Iterable
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+
+def _load_sample_text(sample_path: Path) -> str:
+    """Load and normalize the transcription text from one processed sample."""
+    sample = torch.load(sample_path, map_location="cpu")
+    return str(sample.get("text", "")).strip()
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,7 @@ class OfflineHandwritingDataset(Dataset):
         dataset_path: str | Path | None = None,
         text_encoder: CTCTextEncoder | None = None,
         max_samples: int | None = None,
+        sample_paths: list[Path] | None = None,
     ) -> None:
         if dataset_path is None and root_dir is None:
             raise ValueError("Either root_dir or dataset_path must be provided.")
@@ -77,22 +85,27 @@ class OfflineHandwritingDataset(Dataset):
         self.dataset_name = dataset_name or self.root_dir.name
         self.text_encoder = text_encoder
 
-        self.split_dir = self.root_dir / split
-        if not self.split_dir.exists() and dataset_name is not None:
-            safe_name = dataset_name.replace("/", "_")
-            legacy_split_dir = self.root_dir / safe_name / split
-            if legacy_split_dir.exists():
-                self.split_dir = legacy_split_dir
-        if not self.split_dir.exists():
-            raise FileNotFoundError(f"Split directory not found: {self.split_dir}")
+        self.split_dir: Path | None = None
+        if sample_paths is not None:
+            paths = [Path(path) for path in sample_paths]
+        else:
+            self.split_dir = self.root_dir / split
+            if not self.split_dir.exists() and dataset_name is not None:
+                safe_name = dataset_name.replace("/", "_")
+                legacy_split_dir = self.root_dir / safe_name / split
+                if legacy_split_dir.exists():
+                    self.split_dir = legacy_split_dir
+            if not self.split_dir.exists():
+                raise FileNotFoundError(f"Split directory not found: {self.split_dir}")
 
-        paths = sorted(self.split_dir.glob("sample_*.pt"))
+            paths = sorted(self.split_dir.glob("sample_*.pt"))
         if max_samples is not None:
             paths = paths[:max_samples]
-        self.sample_paths = paths
+        self.sample_paths = [path for path in paths if _load_sample_text(path)]
 
         if not self.sample_paths:
-            raise FileNotFoundError(f"No processed samples found in: {self.split_dir}")
+            location = self.split_dir if self.split_dir is not None else self.root_dir
+            raise FileNotFoundError(f"No processed samples found in: {location}")
 
     def __len__(self) -> int:
         return len(self.sample_paths)
@@ -127,12 +140,9 @@ class OfflineHandwritingDataset(Dataset):
         if image.min() < -0.1 or image.max() > 1.1:  # Allow small numerical errors
             raise ValueError(f"Image not normalized to [0, 1], got range [{image.min():.4f}, {image.max():.4f}] in {path}")
         
-        text = str(sample.get("text", ""))
-        
-        # ✅ Handle empty text samples gracefully
-        if not text.strip():
-            import warnings
-            warnings.warn(f"Empty text in sample {path}", RuntimeWarning)
+        text = str(sample.get("text", "")).strip()
+        if not text:
+            raise ValueError(f"Empty text in sample {path}")
         
         encoded = self.text_encoder.encode(text) if self.text_encoder else []
 
@@ -176,9 +186,50 @@ class OfflineHandwritingDataset(Dataset):
 
         texts: list[str] = []
         for sample_path in sample_paths:
-            sample = torch.load(sample_path, map_location="cpu")
-            texts.append(str(sample.get("text", "")))
+            text = _load_sample_text(sample_path)
+            if text:
+                texts.append(text)
         return CTCTextEncoder.from_texts(texts)
+
+
+def split_sample_paths(
+    sample_paths: list[Path],
+    validation_fraction: float = 0.1,
+    seed: int = 42,
+) -> tuple[list[Path], list[Path]]:
+    """Split processed sample paths into train/validation subsets."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1.")
+
+    paths = list(sample_paths)
+    rng = Random(seed)
+    rng.shuffle(paths)
+
+    validation_count = max(1, int(round(len(paths) * validation_fraction)))
+    validation_count = min(validation_count, len(paths) - 1) if len(paths) > 1 else 1
+    validation_paths = paths[:validation_count]
+    train_paths = paths[validation_count:]
+
+    if not train_paths:
+        raise ValueError("Not enough samples to create a non-empty train/validation split.")
+
+    return train_paths, validation_paths
+
+
+def load_processed_sample_paths(
+    dataset_path: str | Path,
+    split: str,
+    max_samples: int | None = None,
+) -> list[Path]:
+    """Return sorted processed sample paths for a given dataset split."""
+    split_dir = Path(dataset_path) / split
+    if not split_dir.exists():
+        raise FileNotFoundError(f"Split directory not found: {split_dir}")
+
+    sample_paths = sorted(split_dir.glob("sample_*.pt"))
+    if max_samples is not None:
+        sample_paths = sample_paths[:max_samples]
+    return sample_paths
 
 
 def build_text_encoder_for_dataset_splits(
@@ -197,8 +248,9 @@ def build_text_encoder_for_dataset_splits(
             max_samples=max_samples_per_split,
         )
         for sample_path in dataset.sample_paths:
-            sample = torch.load(sample_path, map_location="cpu")
-            texts.append(str(sample.get("text", "")))
+            text = _load_sample_text(sample_path)
+            if text:
+                texts.append(text)
     return CTCTextEncoder.from_texts(texts)
 
 
@@ -257,6 +309,7 @@ def create_offline_dataloader(
     shuffle: bool = True,
     num_workers: int = 0,
     max_samples: int | None = None,
+    sample_paths: list[Path] | None = None,
 ) -> DataLoader:
     """Create a dataloader for one processed offline split."""
     if text_encoder is None:
@@ -269,6 +322,7 @@ def create_offline_dataloader(
         dataset_path=dataset_path,
         text_encoder=text_encoder,
         max_samples=max_samples,
+        sample_paths=sample_paths,
     )
     return DataLoader(
         dataset,

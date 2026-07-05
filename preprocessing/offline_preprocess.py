@@ -39,10 +39,26 @@ def _augment_grayscale(
     return augmented
 
 
+def _otsu_binarize(image: np.ndarray) -> np.ndarray:
+    """Convert a grayscale handwriting image to a binary foreground/background mask."""
+    if cv2 is not None:
+        _, binary = cv2.threshold(
+            image,
+            0,
+            255,
+            cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+        )
+        return binary
+
+    threshold = float(image.mean())
+    return np.where(image > threshold, 255, 0).astype(np.uint8)
+
+
 def preprocess_image(
     path: str | Path,
     image_size: tuple[int, int] = (128, 512),
     augment: bool = False,
+    binarize: bool = True,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Load, grayscale, resize, optionally augment, and normalize a handwriting image."""
@@ -61,6 +77,9 @@ def preprocess_image(
     if augment:
         local_rng = rng if rng is not None else np.random.default_rng()
         resized = _augment_grayscale(resized, local_rng)
+
+    if binarize:
+        resized = _otsu_binarize(resized)
 
     return resized.astype(np.float32) / 255.0
 

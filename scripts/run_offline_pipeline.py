@@ -6,7 +6,9 @@ import argparse
 import json
 import sys
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
+import urllib.request
 
 import numpy as np
 import torch
@@ -41,6 +43,24 @@ SOURCE_SPLIT_ALIASES = {
     "test": ("test", "validation", "valid"),
     "train": ("train",),
 }
+
+
+TEXT_KEYS = (
+    "assistant",
+    "messages",
+    "conversation",
+    "conversations",
+    "dialogue",
+    "text",
+    "label",
+    "transcription",
+    "caption",
+    "answer",
+    "ground_truth",
+    "gt",
+)
+
+FINEVISION_SAMPLE_URL = "https://huggingface.co/datasets/Voxel51/iam_handwriting_finevision/raw/main/samples.json"
 
 
 def dataset_slug(dataset_name: str) -> str:
@@ -88,13 +108,83 @@ def resolve_source_split_name(dataset_name: str, split_name: str) -> str:
 
 def extract_transcription(item: dict) -> str:
     """Extract the ground-truth transcription from a dataset row."""
-    if "assistant" in item and item["assistant"] is not None:
-        return str(item["assistant"])
-    if "text" in item and item["text"] is not None:
-        return str(item["text"])
-    if "label" in item and item["label"] is not None:
-        return str(item["label"])
+    def _extract_value(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            role = str(value.get("role", "")).strip().lower()
+            if role == "assistant":
+                for content_key in ("content", "text", "value", "answer", "caption", "transcription"):
+                    extracted = _extract_value(value.get(content_key))
+                    if extracted:
+                        return extracted
+            for content_key in ("content", "text", "value", "answer", "caption", "transcription", "label"):
+                if content_key in value:
+                    extracted = _extract_value(value[content_key])
+                    if extracted:
+                        return extracted
+            for key in TEXT_KEYS:
+                if key in value:
+                    extracted = _extract_value(value[key])
+                    if extracted:
+                        return extracted
+            for nested_value in value.values():
+                extracted = _extract_value(nested_value)
+                if extracted:
+                    return extracted
+            return ""
+        if isinstance(value, (list, tuple)):
+            if any(isinstance(entry, dict) and "role" in entry for entry in value):
+                for entry in value:
+                    if isinstance(entry, dict) and str(entry.get("role", "")).strip().lower() == "assistant":
+                        extracted = _extract_value(
+                            entry.get("content")
+                            or entry.get("text")
+                            or entry.get("value")
+                            or entry.get("answer")
+                            or entry.get("caption")
+                            or entry.get("transcription")
+                        )
+                        if extracted:
+                            return extracted
+                return ""
+            for entry in value:
+                extracted = _extract_value(entry)
+                if extracted:
+                    return extracted
+            return ""
+        return str(value).strip()
+
+    for key in TEXT_KEYS:
+        if key in item:
+            extracted = _extract_value(item[key])
+            if extracted:
+                return extracted
     return ""
+
+
+@lru_cache(maxsize=1)
+def load_finevision_samples() -> list[dict]:
+    """Load the FineVision FiftyOne sample manifest from the dataset repository."""
+    with urllib.request.urlopen(FINEVISION_SAMPLE_URL, timeout=120) as response:
+        manifest = json.load(response)
+
+    samples = manifest.get("samples", []) if isinstance(manifest, dict) else []
+    if not isinstance(samples, list):
+        raise ValueError("Unexpected FineVision samples.json structure.")
+    return [sample for sample in samples if isinstance(sample, dict)]
+
+
+def is_finevision_dataset(dataset_name: str) -> bool:
+    lowered = dataset_name.lower()
+    return "finevision" in lowered and "voxel51" in lowered
+
+
+def extract_finevision_transcription(sample: dict) -> str:
+    """Extract the handwritten transcription from a FineVision manifest sample."""
+    return str(sample.get("assistant", "")).strip()
 
 
 def _save_preview_grid(
@@ -146,10 +236,19 @@ def process_data_split(
     output_dir = build_output_dir(dataset_name, split_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    for stale_sample in output_dir.glob("sample_*.pt"):
+        stale_sample.unlink()
+
     use_augmentation = augment_train and normalized_split_name == "train"
     rng = np.random.default_rng(seed)
     preview_images: list[np.ndarray] = []
     processed_count = 0
+
+    finevision_samples: list[dict] | None = None
+    if is_finevision_dataset(dataset_name):
+        finevision_samples = load_finevision_samples()
+        if num_samples and num_samples > 0:
+            finevision_samples = finevision_samples[:num_samples]
 
     scratch_dir = output_dir / "_scratch"
     scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +269,18 @@ def process_data_split(
                 rng=rng,
             )
             tensor_data = torch.tensor(processed_np, dtype=torch.float32).unsqueeze(0)
-            text = extract_transcription(item)
+            if finevision_samples is not None:
+                if index >= len(finevision_samples):
+                    break
+                sample = finevision_samples[index]
+                text = extract_finevision_transcription(sample)
+                source_path = sample.get("filepath", f"data/{index:05d}.png")
+            else:
+                text = extract_transcription(item)
+                source_path = f"hf://{dataset_name}/{source_split_name}/{index}"
+
+            if not text:
+                continue
 
             torch.save(
                 {
@@ -178,7 +288,7 @@ def process_data_split(
                     "text": text,
                     "dataset": dataset_name,
                     "split": normalized_split_name,
-                    "source_path": f"hf://{dataset_name}/{source_split_name}/{index}",
+                    "source_path": source_path,
                 },
                 output_dir / f"sample_{index}.pt",
             )
