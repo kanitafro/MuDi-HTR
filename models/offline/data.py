@@ -232,11 +232,27 @@ def load_processed_sample_paths(
     return sample_paths
 
 
-def _resolve_processed_dataset_root(root_dir: str | Path, dataset_name: str) -> Path:
+def resolve_processed_dataset_root(root_dir: str | Path, dataset_name: str) -> Path:
     base_dir = Path(root_dir)
-    safe_name = dataset_name.replace("/", "_").replace("-", "_")
-    candidate_dir = base_dir / safe_name
-    return candidate_dir if candidate_dir.exists() else base_dir
+    normalized = dataset_name.lower()
+    candidate_names: list[str] = []
+
+    if "openhand" in normalized:
+        candidate_names.append("openhand_synth")
+    if "finevision" in normalized:
+        candidate_names.append("iam_handwriting_finevision")
+    if "gnhk" in normalized:
+        candidate_names.append("iam_handwriting_finevision")
+        candidate_names.append("gnhk")
+
+    candidate_names.append(dataset_name.replace("/", "_").replace("-", "_").lower())
+
+    for candidate_name in candidate_names:
+        candidate_dir = base_dir / candidate_name
+        if candidate_dir.exists():
+            return candidate_dir
+
+    return base_dir
 
 
 def build_text_encoder_for_dataset_splits(
@@ -247,7 +263,7 @@ def build_text_encoder_for_dataset_splits(
     """Build one shared CTC encoder from multiple processed dataset splits."""
     texts: list[str] = []
     for dataset_name, split in dataset_split_pairs:
-        dataset_root = _resolve_processed_dataset_root(root_dir, dataset_name)
+        dataset_root = resolve_processed_dataset_root(root_dir, dataset_name)
         split_names = (split,) if isinstance(split, str) else tuple(split)
         for split_name in split_names:
             dataset = OfflineHandwritingDataset(

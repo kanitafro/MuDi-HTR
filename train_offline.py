@@ -23,13 +23,14 @@ from models.offline import (
     OfflineHandwritingDataset,
     build_text_encoder_for_dataset_splits,
     create_offline_dataloader,
+    resolve_processed_dataset_root,
 )
 
 
 RESULTS_ROOT = Path("experiments/results/offline")
 CHECKPOINT_ROOT = Path("checkpoints/offline")
 DEFAULT_STAGE1_DATASET = "to-be/OpenHand-Synth"
-DEFAULT_STAGE2_DATASET = "your-org/GNHK"
+DEFAULT_STAGE2_DATASET = "Voxel51/iam_handwriting_finevision"
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
@@ -222,8 +223,11 @@ def run_epoch(
 
 
 def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, object, object]:
+    stage1_root = resolve_processed_dataset_root(args.data_root, args.stage1_dataset)
+    stage2_root = resolve_processed_dataset_root(args.data_root, args.stage2_dataset)
+
     stage1_train = create_offline_dataloader(
-        root_dir=args.data_root,
+        dataset_path=stage1_root,
         split=args.stage1_train_split,
         dataset_name=args.stage1_dataset,
         text_encoder=encoder,
@@ -233,7 +237,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
         max_samples=args.stage1_max_samples,
     )
     stage1_val = create_offline_dataloader(
-        root_dir=args.data_root,
+        dataset_path=stage1_root,
         split=args.stage1_val_split,
         dataset_name=args.stage1_dataset,
         text_encoder=encoder,
@@ -245,7 +249,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
     if args.stage2_val_split == "auto":
         stage2_dataset = OfflineHandwritingDataset(
             split=args.stage2_train_split,
-            root_dir=args.data_root,
+            dataset_path=stage2_root,
             dataset_name=args.stage2_dataset,
             text_encoder=encoder,
             max_samples=args.stage2_max_samples,
@@ -257,7 +261,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
             seed=args.seed,
         )
         stage2_train = create_offline_dataloader(
-            root_dir=args.data_root,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             dataset_name=args.stage2_dataset,
             text_encoder=encoder,
@@ -267,7 +271,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
             sample_paths=stage2_train_paths,
         )
         stage2_val = create_offline_dataloader(
-            root_dir=args.data_root,
+            dataset_path=stage2_root,
             split="val",
             dataset_name=args.stage2_dataset,
             text_encoder=encoder,
@@ -278,7 +282,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
         )
     else:
         stage2_train = create_offline_dataloader(
-            root_dir=args.data_root,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             dataset_name=args.stage2_dataset,
             text_encoder=encoder,
@@ -288,7 +292,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
             max_samples=args.stage2_max_samples,
         )
         stage2_val = create_offline_dataloader(
-            root_dir=args.data_root,
+            dataset_path=stage2_root,
             split=args.stage2_val_split,
             dataset_name=args.stage2_dataset,
             text_encoder=encoder,
