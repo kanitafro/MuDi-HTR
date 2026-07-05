@@ -240,6 +240,7 @@ def process_data_split(
         stale_sample.unlink()
 
     use_augmentation = augment_train and normalized_split_name == "train"
+    use_binarization = not is_finevision_dataset(dataset_name)
     rng = np.random.default_rng(seed)
     preview_images: list[np.ndarray] = []
     processed_count = 0
@@ -265,7 +266,7 @@ def process_data_split(
                 temp_path,
                 image_size=image_size,
                 augment=use_augmentation,
-                binarize=True,
+                binarize=use_binarization,
                 rng=rng,
             )
             tensor_data = torch.tensor(processed_np, dtype=torch.float32).unsqueeze(0)
@@ -314,7 +315,7 @@ def process_data_split(
             "rotation_degrees": 5.0,
             "scale_delta": 0.10,
         },
-        "binarization": "otsu",
+        "binarization": "otsu" if use_binarization else "disabled",
         "preview_figure": str(preview_path),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "source": "huggingface_streaming",
