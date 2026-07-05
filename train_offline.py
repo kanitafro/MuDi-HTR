@@ -17,7 +17,6 @@ from typing import Iterable
 import torch
 from torch import nn
 from torch.optim import AdamW
-from torch.cuda.amp import GradScaler, autocast
 
 from models.offline import (
     CRNN,
@@ -50,7 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs-stage1", type=int, default=15, help="Pretraining epochs.")
     parser.add_argument("--epochs-stage2", type=int, default=10, help="Fine-tuning epochs.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
-    parser.add_argument("--lr-stage2", type=float, default=1e-4, help="Learning rate for stage 2.")
+    parser.add_argument("--lr-stage2", type=float, default=5e-5, help="Learning rate for stage 2.")
+    parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
+    parser.add_argument("--stage2-backbone-lr-scale", type=float, default=0.1, help="LR multiplier for the CNN backbone during stage 2.")
+    parser.add_argument("--stage2-head-lr-scale", type=float, default=1.5, help="LR multiplier for the classifier head during stage 2.")
     parser.add_argument("--hidden-size", type=int, default=256, help="CRNN hidden size.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, cuda.")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers.")
@@ -111,6 +113,32 @@ def greedy_decode(logits: torch.Tensor, encoder) -> list[str]:
     return [encoder.decode(sequence) for sequence in token_ids]
 
 
+def set_module_trainable(module: nn.Module, trainable: bool) -> None:
+    for parameter in module.parameters():
+        parameter.requires_grad_(trainable)
+
+
+def build_optimizer(
+    model: nn.Module,
+    lr: float,
+    stage_name: str,
+    backbone_lr_scale: float,
+    head_lr_scale: float,
+) -> AdamW:
+    if stage_name != "finetuned":
+        return AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    return AdamW(
+        [
+            {"params": model.cnn.parameters(), "lr": lr * backbone_lr_scale},
+            {"params": model.sequence_projection.parameters(), "lr": lr},
+            {"params": model.rnn.parameters(), "lr": lr},
+            {"params": model.classifier.parameters(), "lr": lr * head_lr_scale},
+        ],
+        weight_decay=1e-4,
+    )
+
+
 def run_epoch(
     model: nn.Module,
     dataloader,
@@ -119,7 +147,7 @@ def run_epoch(
     encoder,
     device: torch.device,
     use_amp: bool,
-    scaler: GradScaler | None,
+    scaler: torch.amp.GradScaler | None,
 ) -> dict:
     training = optimizer is not None
     model.train(training)
@@ -135,7 +163,7 @@ def run_epoch(
         target_lengths = batch["target_lengths"].to(device)
         references = batch["texts"]
 
-        with autocast(enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             logits = model(images)
             log_probs = logits.log_softmax(dim=-1)
             input_lengths = torch.full(
@@ -224,16 +252,36 @@ def fit_stage(
     epochs: int,
     lr: float,
     checkpoint_path: Path,
+    freeze_cnn_epochs: int = 0,
+    backbone_lr_scale: float = 0.1,
+    head_lr_scale: float = 1.5,
 ) -> dict:
     criterion = nn.CTCLoss(blank=encoder.blank_index, zero_infinity=True)
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     use_amp = device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp) if use_amp else None
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if use_amp else None
+
+    if stage_name == "finetuned" and freeze_cnn_epochs > 0:
+        set_module_trainable(model.cnn, False)
+    else:
+        set_module_trainable(model.cnn, True)
+
+    optimizer = build_optimizer(model, lr, stage_name, backbone_lr_scale, head_lr_scale)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=2,
+        min_lr=1e-6,
+    )
 
     best_val_cer = float("inf")
     history: list[dict] = []
 
     for epoch in range(1, epochs + 1):
+        if stage_name == "finetuned" and freeze_cnn_epochs > 0 and epoch == freeze_cnn_epochs + 1:
+            set_module_trainable(model.cnn, True)
+            print(f"[{stage_name}] unfreezing CNN backbone for adaptive fine-tuning.")
+
         train_metrics = run_epoch(model, train_loader, criterion, optimizer, encoder, device, use_amp, scaler)
         val_metrics = run_epoch(model, val_loader, criterion, None, encoder, device, False, None)
         history.append({"epoch": epoch, "train": train_metrics, "val": val_metrics})
@@ -261,6 +309,8 @@ def fit_stage(
                 checkpoint_path,
             )
 
+            scheduler.step(val_metrics["cer"])
+
     return {
         "best_val_cer": best_val_cer,
         "history": history,
@@ -274,8 +324,8 @@ def main() -> None:
     device = resolve_device(args.device)
 
     stage_vocab_pairs = [
-        (args.stage1_dataset, args.stage1_train_split),
-        (args.stage2_dataset, args.stage2_train_split),
+        (args.stage1_dataset, (args.stage1_train_split, args.stage1_val_split)),
+        (args.stage2_dataset, (args.stage2_train_split, args.stage2_val_split)),
     ]
     encoder = build_text_encoder_for_dataset_splits(
         root_dir=args.data_root,
@@ -316,6 +366,9 @@ def main() -> None:
         epochs=args.epochs_stage2,
         lr=args.lr_stage2,
         checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+        freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
+        backbone_lr_scale=args.stage2_backbone_lr_scale,
+        head_lr_scale=args.stage2_head_lr_scale,
     )
 
     summary = {

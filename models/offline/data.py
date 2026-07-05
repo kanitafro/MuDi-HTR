@@ -234,49 +234,55 @@ def load_processed_sample_paths(
 
 def build_text_encoder_for_dataset_splits(
     root_dir: str | Path,
-    dataset_split_pairs: list[tuple[str, str]],
+    dataset_split_pairs: list[tuple[str, Iterable[str] | str]],
     max_samples_per_split: int | None = None,
 ) -> CTCTextEncoder:
     """Build one shared CTC encoder from multiple processed dataset splits."""
     texts: list[str] = []
     for dataset_name, split in dataset_split_pairs:
-        dataset = OfflineHandwritingDataset(
-            split=split,
-            root_dir=root_dir,
-            dataset_name=dataset_name,
-            text_encoder=None,
-            max_samples=max_samples_per_split,
-        )
-        for sample_path in dataset.sample_paths:
-            text = _load_sample_text(sample_path)
-            if text:
-                texts.append(text)
+        split_names = (split,) if isinstance(split, str) else tuple(split)
+        for split_name in split_names:
+            dataset = OfflineHandwritingDataset(
+                split=split_name,
+                root_dir=root_dir,
+                dataset_name=dataset_name,
+                text_encoder=None,
+                max_samples=max_samples_per_split,
+            )
+            for sample_path in dataset.sample_paths:
+                text = _load_sample_text(sample_path)
+                if text:
+                    texts.append(text)
     return CTCTextEncoder.from_texts(texts)
 
 
 def build_text_encoder_for_dataset_paths(
     dataset_paths: list[str | Path],
-    split: str = "train",
+    splits: Iterable[str] | str = ("train",),
     max_samples_per_path: int | None = None,
 ) -> CTCTextEncoder:
     """Build a shared CTC encoder from one or more processed dataset roots."""
     texts: list[str] = []
+    split_names = (splits,) if isinstance(splits, str) else tuple(splits)
     for dataset_path in dataset_paths:
-        split_dir = Path(dataset_path) / split
-        if not split_dir.exists():
-            raise FileNotFoundError(f"Split directory not found: {split_dir}")
+        for split_name in split_names:
+            split_dir = Path(dataset_path) / split_name
+            if not split_dir.exists():
+                raise FileNotFoundError(f"Split directory not found: {split_dir}")
 
-        sample_paths = sorted(split_dir.glob("sample_*.pt"))
-        if max_samples_per_path is not None:
-            sample_paths = sample_paths[:max_samples_per_path]
+            sample_paths = sorted(split_dir.glob("sample_*.pt"))
+            if max_samples_per_path is not None:
+                sample_paths = sample_paths[:max_samples_per_path]
 
-        for sample_path in sample_paths:
-            # ✅ Add error handling for corrupted files
-            try:
-                sample = torch.load(sample_path, map_location="cpu")
-                texts.append(str(sample.get("text", "")))
-            except Exception as e:
-                raise ValueError(f"Failed to load checkpoint at {sample_path}: {e}") from e
+            for sample_path in sample_paths:
+                # ✅ Add error handling for corrupted files
+                try:
+                    sample = torch.load(sample_path, map_location="cpu")
+                    text = str(sample.get("text", "")).strip()
+                    if text:
+                        texts.append(text)
+                except Exception as e:
+                    raise ValueError(f"Failed to load checkpoint at {sample_path}: {e}") from e
 
     return CTCTextEncoder.from_texts(texts)
 
