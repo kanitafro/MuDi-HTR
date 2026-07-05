@@ -232,6 +232,13 @@ def load_processed_sample_paths(
     return sample_paths
 
 
+def _resolve_processed_dataset_root(root_dir: str | Path, dataset_name: str) -> Path:
+    base_dir = Path(root_dir)
+    safe_name = dataset_name.replace("/", "_").replace("-", "_")
+    candidate_dir = base_dir / safe_name
+    return candidate_dir if candidate_dir.exists() else base_dir
+
+
 def build_text_encoder_for_dataset_splits(
     root_dir: str | Path,
     dataset_split_pairs: list[tuple[str, Iterable[str] | str]],
@@ -240,11 +247,12 @@ def build_text_encoder_for_dataset_splits(
     """Build one shared CTC encoder from multiple processed dataset splits."""
     texts: list[str] = []
     for dataset_name, split in dataset_split_pairs:
+        dataset_root = _resolve_processed_dataset_root(root_dir, dataset_name)
         split_names = (split,) if isinstance(split, str) else tuple(split)
         for split_name in split_names:
             dataset = OfflineHandwritingDataset(
                 split=split_name,
-                root_dir=root_dir,
+                dataset_path=dataset_root,
                 dataset_name=dataset_name,
                 text_encoder=None,
                 max_samples=max_samples_per_split,
@@ -268,7 +276,10 @@ def build_text_encoder_for_dataset_paths(
         for split_name in split_names:
             split_dir = Path(dataset_path) / split_name
             if not split_dir.exists():
-                raise FileNotFoundError(f"Split directory not found: {split_dir}")
+                legacy_split_dir = Path(dataset_path) / split_name
+                if not legacy_split_dir.exists():
+                    raise FileNotFoundError(f"Split directory not found: {split_dir}")
+                split_dir = legacy_split_dir
 
             sample_paths = sorted(split_dir.glob("sample_*.pt"))
             if max_samples_per_path is not None:
