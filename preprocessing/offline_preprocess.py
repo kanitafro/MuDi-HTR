@@ -18,6 +18,8 @@ def _augment_grayscale(
     rng: np.random.Generator,
     max_rotation_deg: float = 5.0,
     max_scale_delta: float = 0.10,
+    max_shear_deg: float = 7.0,
+    max_translation_frac: float = 0.06,
 ) -> np.ndarray:
     """Apply light geometric augmentation for training robustness."""
     if cv2 is None:
@@ -25,9 +27,61 @@ def _augment_grayscale(
 
     h, w = image.shape
     angle = float(rng.uniform(-max_rotation_deg, max_rotation_deg))
-    scale = float(rng.uniform(1.0 - max_scale_delta, 1.0 + max_scale_delta))
-    center = (w / 2.0, h / 2.0)
-    matrix = cv2.getRotationMatrix2D(center, angle, scale)
+    scale_x = float(rng.uniform(1.0 - max_scale_delta, 1.0 + max_scale_delta))
+    scale_y = float(rng.uniform(1.0 - max_scale_delta, 1.0 + max_scale_delta))
+    shear_x = np.tan(np.deg2rad(float(rng.uniform(-max_shear_deg, max_shear_deg))))
+    translate_x = float(rng.uniform(-max_translation_frac, max_translation_frac) * w)
+    translate_y = float(rng.uniform(-max_translation_frac, max_translation_frac) * h)
+
+    center_x = w / 2.0
+    center_y = h / 2.0
+    theta = np.deg2rad(angle)
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+
+    to_origin = np.array(
+        [
+            [1.0, 0.0, -center_x],
+            [0.0, 1.0, -center_y],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    scale_matrix = np.array(
+        [
+            [scale_x, 0.0, 0.0],
+            [0.0, scale_y, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    shear_matrix = np.array(
+        [
+            [1.0, shear_x, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    rotation_matrix = np.array(
+        [
+            [cos_theta, -sin_theta, 0.0],
+            [sin_theta, cos_theta, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    back_to_center = np.array(
+        [
+            [1.0, 0.0, center_x + translate_x],
+            [0.0, 1.0, center_y + translate_y],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    affine = back_to_center @ rotation_matrix @ shear_matrix @ scale_matrix @ to_origin
+    matrix = affine[:2, :]
 
     augmented = cv2.warpAffine(
         image,
