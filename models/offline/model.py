@@ -14,34 +14,70 @@ class ConvBlock(nn.Sequential):
         )
 
 
+class ResidualConvBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, pool: tuple[int, int], dropout: float = 0.0) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.shortcut = (
+            nn.Identity()
+            if in_channels == out_channels
+            else nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+        )
+        self.pool = nn.MaxPool2d(pool)
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.shortcut(x)
+
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+
+        x = self.pool(x)
+        residual = self.pool(residual)
+        x = torch.relu(x + residual)
+        return x
+
+
 class CRNN(nn.Module):
-    """Compact CRNN baseline for offline handwriting recognition."""
+    """Residual CRNN for offline handwriting recognition."""
 
     def __init__(self, num_classes: int = 80, hidden_size: int = 256) -> None:
         super().__init__()
 
         self.cnn = nn.Sequential(
-            ConvBlock(1, 64, (2, 2)),   # 128x512 -> 64x256
-            ConvBlock(64, 128, (2, 2)), # 64x256 -> 32x128
-            ConvBlock(128, 256, (2, 1)), # 32x128 -> 16x128
-            ConvBlock(256, 256, (2, 1)), # 16x128 -> 8x128
-            ConvBlock(256, 512, (2, 1)), # 8x128 -> 4x128
+            ResidualConvBlock(1, 64, (2, 2), dropout=0.05),
+            ResidualConvBlock(64, 128, (2, 2), dropout=0.05),
+            ResidualConvBlock(128, 256, (2, 1), dropout=0.10),
+            ResidualConvBlock(256, 384, (2, 1), dropout=0.10),
+            ResidualConvBlock(384, 512, (2, 1), dropout=0.10),
         )
         self.final_pool = nn.MaxPool2d((4, 1))  # 4x128 -> 1x128
 
         self.sequence_projection = nn.Sequential(
             nn.Linear(512, hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(0.25),
         )
         self.rnn = nn.LSTM(
             input_size=hidden_size,
             hidden_size=hidden_size,
-            num_layers=2,
+            num_layers=3,
             bidirectional=True,
             batch_first=True,
-            dropout=0.3,
+            dropout=0.35,
         )
+        self.sequence_dropout = nn.Dropout(0.25)
         self.classifier = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -65,6 +101,7 @@ class CRNN(nn.Module):
         sequence = features.squeeze(2).permute(0, 2, 1)  # (batch, width, channels)
         sequence = self.sequence_projection(sequence)
         sequence, _ = self.rnn(sequence)
+        sequence = self.sequence_dropout(sequence)
         logits = self.classifier(sequence)
         return logits.permute(1, 0, 2)
 

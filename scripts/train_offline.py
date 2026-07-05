@@ -339,6 +339,17 @@ def set_module_trainable(module: nn.Module, trainable: bool) -> None:
         parameter.requires_grad_(trainable)
 
 
+def checkpoint_is_compatible(model: nn.Module, checkpoint_state_dict: dict[str, torch.Tensor]) -> bool:
+    model_state_dict = model.state_dict()
+    if set(model_state_dict.keys()) != set(checkpoint_state_dict.keys()):
+        return False
+
+    for key, value in checkpoint_state_dict.items():
+        if model_state_dict[key].shape != value.shape:
+            return False
+    return True
+
+
 def build_optimizer(
     model: nn.Module,
     lr: float,
@@ -537,8 +548,8 @@ def fit_stage(
 
     if checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        saved_classifier_weight = checkpoint.get("model_state_dict", {}).get("classifier.weight")
-        if saved_classifier_weight is not None and saved_classifier_weight.shape[0] == model.classifier.out_features:
+        saved_model_state = checkpoint.get("model_state_dict", {})
+        if saved_model_state and checkpoint_is_compatible(model, saved_model_state):
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             best_val_cer = float(checkpoint.get("best_val_cer", best_val_cer))
