@@ -20,6 +20,7 @@ from torch.optim import AdamW
 
 from models.offline import (
     CRNN,
+    OfflineHandwritingDataset,
     build_text_encoder_for_dataset_splits,
     create_offline_dataloader,
 )
@@ -29,6 +30,7 @@ RESULTS_ROOT = Path("experiments/results/offline")
 CHECKPOINT_ROOT = Path("checkpoints/offline")
 DEFAULT_STAGE1_DATASET = "to-be/OpenHand-Synth"
 DEFAULT_STAGE2_DATASET = "your-org/GNHK"
+DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,10 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", default="data/processed/offline", help="Processed offline data root.")
     parser.add_argument("--stage1-dataset", default=DEFAULT_STAGE1_DATASET, help="Dataset id used for pretraining.")
     parser.add_argument("--stage1-train-split", default="train", help="Training split for stage 1.")
-    parser.add_argument("--stage1-val-split", default="test", help="Validation split for stage 1.")
+    parser.add_argument("--stage1-val-split", default="val", help="Validation split for stage 1.")
     parser.add_argument("--stage2-dataset", default=DEFAULT_STAGE2_DATASET, help="Dataset id used for fine-tuning.")
     parser.add_argument("--stage2-train-split", default="train", help="Training split for stage 2.")
-    parser.add_argument("--stage2-val-split", default="test", help="Validation split for stage 2.")
+    parser.add_argument("--stage2-val-split", default="auto", help="Validation split for stage 2. Use 'auto' to carve out a held-out subset from train.")
+    parser.add_argument("--stage2-validation-fraction", type=float, default=DEFAULT_STAGE2_VALIDATION_FRACTION, help="Fraction of stage 2 train samples reserved for validation when --stage2-val-split is auto.")
     parser.add_argument("--max-vocab-samples", type=int, default=50000, help="Cap samples used to build the shared vocab.")
     parser.add_argument("--stage1-max-samples", type=int, default=None, help="Optional cap for stage 1 train samples.")
     parser.add_argument("--stage1-val-max-samples", type=int, default=None, help="Optional cap for stage 1 val samples.")
@@ -139,6 +142,26 @@ def build_optimizer(
     )
 
 
+def split_sample_paths(sample_paths: list[Path], validation_fraction: float, seed: int) -> tuple[list[Path], list[Path]]:
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1.")
+    if len(sample_paths) < 2:
+        raise ValueError("At least two samples are required to create a held-out validation subset.")
+
+    generator = torch.Generator().manual_seed(seed)
+    permutation = torch.randperm(len(sample_paths), generator=generator).tolist()
+    shuffled_paths = [sample_paths[index] for index in permutation]
+
+    validation_count = max(1, int(round(len(shuffled_paths) * validation_fraction)))
+    validation_count = min(validation_count, len(shuffled_paths) - 1)
+
+    validation_paths = shuffled_paths[:validation_count]
+    train_paths = shuffled_paths[validation_count:]
+    if not train_paths:
+        raise ValueError("Not enough samples to keep a non-empty training subset.")
+    return train_paths, validation_paths
+
+
 def run_epoch(
     model: nn.Module,
     dataloader,
@@ -219,26 +242,61 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
         num_workers=args.num_workers,
         max_samples=args.stage1_val_max_samples,
     )
-    stage2_train = create_offline_dataloader(
-        root_dir=args.data_root,
-        split=args.stage2_train_split,
-        dataset_name=args.stage2_dataset,
-        text_encoder=encoder,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        max_samples=args.stage2_max_samples,
-    )
-    stage2_val = create_offline_dataloader(
-        root_dir=args.data_root,
-        split=args.stage2_val_split,
-        dataset_name=args.stage2_dataset,
-        text_encoder=encoder,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        max_samples=args.stage2_val_max_samples,
-    )
+    if args.stage2_val_split == "auto":
+        stage2_dataset = OfflineHandwritingDataset(
+            split=args.stage2_train_split,
+            root_dir=args.data_root,
+            dataset_name=args.stage2_dataset,
+            text_encoder=encoder,
+            max_samples=args.stage2_max_samples,
+        )
+        stage2_sample_paths = stage2_dataset.sample_paths
+        stage2_train_paths, stage2_val_paths = split_sample_paths(
+            stage2_sample_paths,
+            validation_fraction=args.stage2_validation_fraction,
+            seed=args.seed,
+        )
+        stage2_train = create_offline_dataloader(
+            root_dir=args.data_root,
+            split=args.stage2_train_split,
+            dataset_name=args.stage2_dataset,
+            text_encoder=encoder,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            sample_paths=stage2_train_paths,
+        )
+        stage2_val = create_offline_dataloader(
+            root_dir=args.data_root,
+            split="val",
+            dataset_name=args.stage2_dataset,
+            text_encoder=encoder,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            sample_paths=stage2_val_paths,
+        )
+    else:
+        stage2_train = create_offline_dataloader(
+            root_dir=args.data_root,
+            split=args.stage2_train_split,
+            dataset_name=args.stage2_dataset,
+            text_encoder=encoder,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            max_samples=args.stage2_max_samples,
+        )
+        stage2_val = create_offline_dataloader(
+            root_dir=args.data_root,
+            split=args.stage2_val_split,
+            dataset_name=args.stage2_dataset,
+            text_encoder=encoder,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            max_samples=args.stage2_val_max_samples,
+        )
     return stage1_train, stage1_val, stage2_train, stage2_val
 
 
