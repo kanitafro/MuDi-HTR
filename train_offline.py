@@ -235,6 +235,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
         shuffle=True,
         num_workers=args.num_workers,
         max_samples=args.stage1_max_samples,
+        augment=True,
     )
     stage1_val = create_offline_dataloader(
         dataset_path=stage1_root,
@@ -269,6 +270,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
             shuffle=True,
             num_workers=args.num_workers,
             sample_paths=stage2_train_paths,
+            augment=True,
         )
         stage2_val = create_offline_dataloader(
             dataset_path=stage2_root,
@@ -290,6 +292,7 @@ def build_loaders(args: argparse.Namespace, encoder) -> tuple[object, object, ob
             shuffle=True,
             num_workers=args.num_workers,
             max_samples=args.stage2_max_samples,
+            augment=True,
         )
         stage2_val = create_offline_dataloader(
             dataset_path=stage2_root,

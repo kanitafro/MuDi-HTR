@@ -3,18 +3,82 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from random import Random
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
 
 
 def _load_sample_text(sample_path: Path) -> str:
     """Load and normalize the transcription text from one processed sample."""
     sample = torch.load(sample_path, map_location="cpu")
     return str(sample.get("text", "")).strip()
+
+
+def _augment_sample_image(image: torch.Tensor) -> torch.Tensor:
+    """Apply a fresh affine handwriting perturbation at training time."""
+    if cv2 is None:
+        return image
+
+    if image.ndim != 3 or image.shape[0] != 1:
+        raise ValueError(f"Expected image tensor with shape (1, H, W), got {tuple(image.shape)}")
+
+    image_np = (image.squeeze(0).clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
+    height, width = image_np.shape
+
+    rotation_deg = float(np.random.uniform(-6.0, 6.0))
+    scale_x = float(np.random.uniform(0.92, 1.08))
+    scale_y = float(np.random.uniform(0.92, 1.08))
+    shear_deg = float(np.random.uniform(-8.0, 8.0))
+    translate_x = float(np.random.uniform(-0.05, 0.05) * width)
+    translate_y = float(np.random.uniform(-0.05, 0.05) * height)
+
+    center_x = width / 2.0
+    center_y = height / 2.0
+    theta = math.radians(rotation_deg)
+    cos_theta = math.cos(theta)
+    sin_theta = math.sin(theta)
+    shear = math.tan(math.radians(shear_deg))
+
+    to_origin = np.array(
+        [[1.0, 0.0, -center_x], [0.0, 1.0, -center_y], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    scale_matrix = np.array(
+        [[scale_x, 0.0, 0.0], [0.0, scale_y, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    shear_matrix = np.array(
+        [[1.0, shear, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    rotation_matrix = np.array(
+        [[cos_theta, -sin_theta, 0.0], [sin_theta, cos_theta, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    back_to_center = np.array(
+        [[1.0, 0.0, center_x + translate_x], [0.0, 1.0, center_y + translate_y], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+
+    affine = back_to_center @ rotation_matrix @ shear_matrix @ scale_matrix @ to_origin
+    warped = cv2.warpAffine(
+        image_np,
+        affine[:2, :],
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return torch.from_numpy(warped.astype(np.float32) / 255.0).unsqueeze(0)
 
 
 @dataclass(frozen=True)
@@ -76,6 +140,7 @@ class OfflineHandwritingDataset(Dataset):
         text_encoder: CTCTextEncoder | None = None,
         max_samples: int | None = None,
         sample_paths: list[Path] | None = None,
+        augment: bool = False,
     ) -> None:
         if dataset_path is None and root_dir is None:
             raise ValueError("Either root_dir or dataset_path must be provided.")
@@ -84,6 +149,7 @@ class OfflineHandwritingDataset(Dataset):
         self.split = split
         self.dataset_name = dataset_name or self.root_dir.name
         self.text_encoder = text_encoder
+        self.augment = augment and split == "train"
 
         self.split_dir: Path | None = None
         if sample_paths is not None:
@@ -145,6 +211,8 @@ class OfflineHandwritingDataset(Dataset):
             raise ValueError(f"Empty text in sample {path}")
         
         encoded = self.text_encoder.encode(text) if self.text_encoder else []
+        if self.augment:
+            image = _augment_sample_image(image)
 
         return {
             "image": image.float(),
@@ -166,6 +234,7 @@ class OfflineHandwritingDataset(Dataset):
         dataset_name: str | None = None,
         dataset_path: str | Path | None = None,
         max_samples: int | None = None,
+        augment: bool = False,
     ) -> CTCTextEncoder:
         """Scan a processed split and build a text encoder from all labels."""
         dataset = OfflineHandwritingDataset(
@@ -175,6 +244,7 @@ class OfflineHandwritingDataset(Dataset):
             dataset_path=dataset_path,
             text_encoder=None,
             max_samples=max_samples,
+            augment=augment,
         )
         split_dir = dataset.split_dir
         if not split_dir.exists():
@@ -343,6 +413,7 @@ def create_offline_dataloader(
     num_workers: int = 0,
     max_samples: int | None = None,
     sample_paths: list[Path] | None = None,
+    augment: bool = False,
 ) -> DataLoader:
     """Create a dataloader for one processed offline split."""
     if text_encoder is None:
@@ -356,6 +427,7 @@ def create_offline_dataloader(
         text_encoder=text_encoder,
         max_samples=max_samples,
         sample_paths=sample_paths,
+        augment=augment,
     )
     return DataLoader(
         dataset,

@@ -239,7 +239,7 @@ def process_data_split(
     for stale_sample in output_dir.glob("sample_*.pt"):
         stale_sample.unlink()
 
-    use_augmentation = augment_train and normalized_split_name == "train"
+    use_augmentation = augment_train and normalized_split_name == "train" and not is_finevision_dataset(dataset_name)
     use_binarization = not is_finevision_dataset(dataset_name)
     rng = np.random.default_rng(seed)
     preview_images: list[np.ndarray] = []
