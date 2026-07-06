@@ -232,10 +232,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pretrained-checkpoint", default=str(CHECKPOINT_ROOT / "pretrained.pth"), help="Path to an existing pretrained checkpoint used when --skip-stage1 is enabled.")
     parser.add_argument("--dataset-name", default=None, help="Compatibility alias for the stage 2 dataset name or processed root.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
-    parser.add_argument("--lr-stage2", type=float, default=2e-5, help="Learning rate for stage 2.")
-    parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
-    parser.add_argument("--stage2-backbone-lr-scale", type=float, default=0.1, help="LR multiplier for the CNN backbone during stage 2.")
-    parser.add_argument("--stage2-head-lr-scale", type=float, default=1.5, help="LR multiplier for the classifier head during stage 2.")
+    parser.add_argument("--lr-stage2", type=float, default=1e-4, help="Learning rate for stage 2.")
+    parser.add_argument("--stage2-head-only-epochs", type=int, default=3, help="Train only the classifier head for this many initial fine-tuning epochs.")
+    parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=6, help="Freeze the CNN backbone for this many fine-tuning epochs.")
+    parser.add_argument("--stage2-backbone-lr-scale", type=float, default=0.05, help="LR multiplier for the CNN backbone during stage 2.")
+    parser.add_argument("--stage2-head-lr-scale", type=float, default=5.0, help="LR multiplier for the classifier head during stage 2.")
     parser.add_argument("--hidden-size", type=int, default=256, help="CRNN hidden size.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, cuda.")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers.")
@@ -344,6 +345,27 @@ def set_module_trainable(module: nn.Module, trainable: bool) -> None:
         parameter.requires_grad_(trainable)
 
 
+def configure_finetune_trainability(model: nn.Module, epoch: int, head_only_epochs: int, freeze_cnn_epochs: int) -> None:
+    if epoch <= head_only_epochs:
+        set_module_trainable(model.cnn, False)
+        set_module_trainable(model.sequence_projection, False)
+        set_module_trainable(model.rnn, False)
+        set_module_trainable(model.classifier, True)
+        return
+
+    if epoch <= freeze_cnn_epochs:
+        set_module_trainable(model.cnn, False)
+        set_module_trainable(model.sequence_projection, True)
+        set_module_trainable(model.rnn, True)
+        set_module_trainable(model.classifier, True)
+        return
+
+    set_module_trainable(model.cnn, True)
+    set_module_trainable(model.sequence_projection, True)
+    set_module_trainable(model.rnn, True)
+    set_module_trainable(model.classifier, True)
+
+
 def checkpoint_is_compatible(model: nn.Module, checkpoint_state_dict: dict[str, torch.Tensor]) -> bool:
     model_state_dict = model.state_dict()
     if set(model_state_dict.keys()) != set(checkpoint_state_dict.keys()):
@@ -445,6 +467,62 @@ def run_epoch(
     }
 
 
+@torch.no_grad()
+def preview_validation_examples(
+    model: nn.Module,
+    dataloader,
+    encoder,
+    device: torch.device,
+    max_examples: int = 2,
+    beam_width: int = 5,
+) -> list[dict[str, str | float]]:
+    model.eval()
+    for batch in dataloader:
+        images = batch["images"].to(device)
+        references = batch["texts"]
+
+        logits = model(images)
+        greedy_predictions = greedy_decode(logits.detach().cpu(), encoder)
+        beam_predictions = model.decode_beam_search(
+            logits.detach(),
+            alphabet=encoder.vocab,
+            beam_width=beam_width,
+            blank_index=encoder.blank_index,
+        )
+
+        previews: list[dict[str, str | float]] = []
+        for index, reference in enumerate(references[:max_examples]):
+            greedy_prediction = greedy_predictions[index] if index < len(greedy_predictions) else ""
+            beam_prediction, beam_confidence = beam_predictions[index] if index < len(beam_predictions) else ("", 0.0)
+            previews.append(
+                {
+                    "reference": reference,
+                    "greedy": greedy_prediction,
+                    "beam": beam_prediction,
+                    "beam_confidence": float(beam_confidence),
+                }
+            )
+        return previews
+
+    return []
+
+
+def print_validation_preview(stage_name: str, previews: list[dict[str, str | float]]) -> None:
+    if not previews:
+        print(f"[{stage_name}] preview: no validation samples available.", flush=True)
+        return
+
+    for index, preview in enumerate(previews, start=1):
+        reference = preview["reference"]
+        greedy = preview["greedy"]
+        beam = preview["beam"]
+        beam_confidence = preview["beam_confidence"]
+        print(
+            f"[{stage_name}] preview {index}: ref={reference!r} | greedy={greedy!r} | beam={beam!r} (conf={beam_confidence:.3f})",
+            flush=True,
+        )
+
+
 def build_loaders(args: argparse.Namespace, encoder):
     stage1_root = Path(args.stage1_dataset_path)
     stage2_root = resolve_processed_dataset_root(args.data_root, args.dataset_name) if args.dataset_name else Path(args.stage2_dataset_path)
@@ -529,6 +607,7 @@ def fit_stage(
     epochs: int,
     lr: float,
     checkpoint_path: Path,
+    head_only_epochs: int = 0,
     freeze_cnn_epochs: int = 0,
     backbone_lr_scale: float = 0.1,
     head_lr_scale: float = 1.5,
@@ -538,9 +617,12 @@ def fit_stage(
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if use_amp else None
     if stage_name == "finetune" and freeze_cnn_epochs > 0:
-        set_module_trainable(model.cnn, False)
+        configure_finetune_trainability(model, 1, head_only_epochs, freeze_cnn_epochs)
     else:
         set_module_trainable(model.cnn, True)
+        set_module_trainable(model.sequence_projection, True)
+        set_module_trainable(model.rnn, True)
+        set_module_trainable(model.classifier, True)
 
     optimizer = build_optimizer(model, lr, stage_name, backbone_lr_scale, head_lr_scale)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -581,9 +663,12 @@ def fit_stage(
     }
 
     for epoch in range(start_epoch, epochs + 1):
-        if stage_name == "finetune" and freeze_cnn_epochs > 0 and epoch == freeze_cnn_epochs + 1:
-            set_module_trainable(model.cnn, True)
-            print(f"[{stage_name}] unfreezing CNN backbone for adaptive fine-tuning.", flush=True)
+        if stage_name == "finetune":
+            configure_finetune_trainability(model, epoch, head_only_epochs, freeze_cnn_epochs)
+            if epoch == head_only_epochs + 1 and head_only_epochs > 0:
+                print(f"[{stage_name}] unfreezing encoder blocks after head warmup.", flush=True)
+            elif epoch == freeze_cnn_epochs + 1 and freeze_cnn_epochs >= head_only_epochs:
+                print(f"[{stage_name}] unfreezing CNN backbone for adaptive fine-tuning.", flush=True)
 
         train_metrics = run_epoch(model, train_loader, criterion, optimizer, encoder, device, use_amp, scaler)
         val_metrics = run_epoch(model, val_loader, criterion, None, encoder, device, False, None)
@@ -602,6 +687,10 @@ def fit_stage(
             f"train loss {train_metrics['loss']:.4f} cer {train_metrics['cer']:.4f} wer {train_metrics['wer']:.4f} | "
             f"val loss {val_metrics['loss']:.4f} cer {val_metrics['cer']:.4f} wer {val_metrics['wer']:.4f}"
         )
+
+        if stage_name == "finetune" and (epoch == start_epoch or epoch % 5 == 0 or epoch == epochs):
+            previews = preview_validation_examples(model, val_loader, encoder, device, max_examples=2, beam_width=5)
+            print_validation_preview(stage_name, previews)
 
         if val_metrics["cer"] <= best_val_cer:
             best_val_cer = float(val_metrics["cer"])
@@ -622,7 +711,7 @@ def fit_stage(
                 checkpoint_path,
             )
 
-            scheduler.step(val_metrics["cer"])
+        scheduler.step(val_metrics["cer"])
 
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -651,6 +740,7 @@ def stage_config_summary(args: argparse.Namespace) -> dict:
             "val_split": args.stage2_val_split,
             "epochs": args.epochs_stage2,
             "learning_rate": args.lr_stage2,
+            "head_only_epochs": args.stage2_head_only_epochs,
             "freeze_cnn_epochs": args.stage2_freeze_cnn_epochs,
             "backbone_lr_scale": args.stage2_backbone_lr_scale,
             "head_lr_scale": args.stage2_head_lr_scale,
@@ -870,6 +960,7 @@ def main() -> None:
             epochs=args.epochs_stage2,
             lr=args.lr_stage2,
             checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+            head_only_epochs=args.stage2_head_only_epochs,
             freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
             backbone_lr_scale=args.stage2_backbone_lr_scale,
             head_lr_scale=args.stage2_head_lr_scale,
