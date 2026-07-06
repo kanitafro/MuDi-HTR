@@ -39,7 +39,7 @@ DEFAULT_SPLITS = (
 
 
 IMAGE_COLUMNS = ("image", "filename", "file", "path", "image_id", "img", "image_name")
-TEXT_COLUMNS = ("text", "label", "transcription", "word", "name", "truth", "target")
+TEXT_COLUMNS = ("text", "label", "transcription", "word", "name", "identity", "truth", "target")
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,19 +97,26 @@ def _extract_rows(csv_path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _extract_text(row: dict[str, str]) -> str:
-    for key in TEXT_COLUMNS:
-        value = row.get(key)
+def _get_row_value(row: dict[str, str], candidates: Iterable[str]) -> str | None:
+    lower_row = {key.lower(): value for key, value in row.items()}
+    for candidate in candidates:
+        value = lower_row.get(candidate.lower())
         if value is not None and str(value).strip():
             return str(value).strip()
+    return None
+
+
+def _extract_text(row: dict[str, str]) -> str:
+    value = _get_row_value(row, TEXT_COLUMNS)
+    if value is not None:
+        return value
     raise KeyError(f"Could not find a transcription column in row keys: {list(row.keys())!r}")
 
 
 def _extract_image_name(row: dict[str, str]) -> str:
-    for key in IMAGE_COLUMNS:
-        value = row.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip()
+    value = _get_row_value(row, IMAGE_COLUMNS)
+    if value is not None:
+        return value
     raise KeyError(f"Could not find an image column in row keys: {list(row.keys())!r}")
 
 
