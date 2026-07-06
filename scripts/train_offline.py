@@ -750,7 +750,18 @@ def build_final_report(
 
 def load_checkpoint_into_model(model: nn.Module, checkpoint_path: Path, device: torch.device) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint_state_dict = checkpoint["model_state_dict"]
+    model_state_dict = model.state_dict()
+    compatible_state_dict = {
+        key: value
+        for key, value in checkpoint_state_dict.items()
+        if key in model_state_dict and model_state_dict[key].shape == value.shape
+    }
+    skipped_keys = sorted(set(checkpoint_state_dict) - set(compatible_state_dict))
+    model_state_dict.update(compatible_state_dict)
+    model.load_state_dict(model_state_dict)
+    if skipped_keys:
+        print(f"Loaded checkpoint with {len(compatible_state_dict)} compatible tensors; skipped {len(skipped_keys)} incompatible tensors.")
     return checkpoint
 
 
