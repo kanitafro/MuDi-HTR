@@ -748,6 +748,12 @@ def build_final_report(
     }
 
 
+def load_checkpoint_into_model(model: nn.Module, checkpoint_path: Path, device: torch.device) -> dict:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    return checkpoint
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -815,17 +821,31 @@ def main() -> None:
     if args.stage2_val_split == "auto":
         print(f"Stage 2 validation: {args.stage2_validation_fraction:.0%} holdout from train")
 
-    stage1_result = fit_stage(
-        stage_name="pretrain",
-        model=model,
-        train_loader=stage1_train,
-        val_loader=stage1_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage1,
-        lr=args.lr_stage1,
-        checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
-    )
+    pretrained_checkpoint_path = Path(args.pretrained_checkpoint)
+    if args.skip_stage1:
+        if not pretrained_checkpoint_path.exists():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {pretrained_checkpoint_path}")
+        load_checkpoint_into_model(model, pretrained_checkpoint_path, device)
+        stage1_result = {
+            "best_val_cer": float("nan"),
+            "best_epoch": 0,
+            "checkpoint": str(pretrained_checkpoint_path),
+            "history": [],
+            "skipped": True,
+        }
+        print(f"Loaded pretrained checkpoint from {pretrained_checkpoint_path}")
+    else:
+        stage1_result = fit_stage(
+            stage_name="pretrain",
+            model=model,
+            train_loader=stage1_train,
+            val_loader=stage1_val,
+            encoder=encoder,
+            device=device,
+            epochs=args.epochs_stage1,
+            lr=args.lr_stage1,
+            checkpoint_path=pretrained_checkpoint_path,
+        )
 
     if args.run_finetune:
         stage2_result = fit_stage(
@@ -848,7 +868,7 @@ def main() -> None:
     else:
         stage2_result = None
         final_stage_label = "Stage 1 pretrain"
-        final_checkpoint_path = CHECKPOINT_ROOT / "pretrained.pth"
+        final_checkpoint_path = pretrained_checkpoint_path
         final_dataloader = stage1_val
 
     report = build_final_report(
