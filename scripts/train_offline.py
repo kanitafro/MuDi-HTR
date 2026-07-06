@@ -532,6 +532,7 @@ def fit_stage(
     freeze_cnn_epochs: int = 0,
     backbone_lr_scale: float = 0.1,
     head_lr_scale: float = 1.5,
+    resume_from_checkpoint: bool = True,
 ) -> dict:
     criterion = nn.CTCLoss(blank=encoder.blank_index, zero_infinity=True)
     use_amp = device.type == "cuda"
@@ -554,7 +555,7 @@ def fit_stage(
     best_epoch = 0
     start_epoch = 1
 
-    if checkpoint_path.exists():
+    if resume_from_checkpoint and checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path, map_location=device)
         saved_model_state = checkpoint.get("model_state_dict", {})
         if saved_model_state and checkpoint_is_compatible(model, saved_model_state):
@@ -872,6 +873,7 @@ def main() -> None:
             freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
             backbone_lr_scale=args.stage2_backbone_lr_scale,
             head_lr_scale=args.stage2_head_lr_scale,
+            resume_from_checkpoint=False,
         )
         final_stage_label = "Final fine-tuned"
         final_checkpoint_path = CHECKPOINT_ROOT / "finetuned.pth"
