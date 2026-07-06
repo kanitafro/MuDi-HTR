@@ -98,9 +98,9 @@ def _extract_rows(csv_path: Path) -> list[dict[str, str]]:
 
 
 def _get_row_value(row: dict[str, str], candidates: Iterable[str]) -> str | None:
-    lower_row = {key.lower(): value for key, value in row.items()}
+    lower_row = {str(key).strip().lower(): value for key, value in row.items()}
     for candidate in candidates:
-        value = lower_row.get(candidate.lower())
+        value = lower_row.get(str(candidate).strip().lower())
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
