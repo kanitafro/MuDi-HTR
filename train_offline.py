@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
@@ -385,6 +386,41 @@ def fit_stage(
     }
 
 
+def build_final_report(
+    model: nn.Module,
+    dataloader,
+    encoder,
+    device: torch.device,
+    checkpoint_path: Path,
+    stage_label: str | None = None,
+) -> dict:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    criterion = nn.CTCLoss(blank=encoder.blank_index, zero_infinity=True)
+    eval_metrics = run_epoch(model, dataloader, criterion, None, encoder, device, False, None)
+
+    summary_lines = [
+        "Offline CRNN final evaluation",
+        f"Checkpoint: {checkpoint_path}",
+        f"Samples: {len(eval_metrics['references'])}",
+        f"Loss: {eval_metrics['loss']:.4f}",
+        f"CER: {eval_metrics['cer']:.4f}",
+        f"WER: {eval_metrics['wer']:.4f}",
+    ]
+
+    if stage_label:
+        summary_lines.insert(1, f"Stage: {stage_label}")
+
+    return {
+        "metrics": eval_metrics,
+        "summary_lines": summary_lines,
+        "top_substitutions": [],
+        "error_examples": [],
+    }
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
@@ -410,6 +446,18 @@ def main() -> None:
     print(f"CTC classes: {encoder.num_classes}")
     print(f"Stage 1 dataset: {args.stage1_dataset}")
     print(f"Stage 2 dataset: {args.stage2_dataset}")
+
+    stage1_result = fit_stage(
+        stage_name="pretrain",
+        model=model,
+        train_loader=stage1_train,
+        val_loader=stage1_val,
+        encoder=encoder,
+        device=device,
+        epochs=args.epochs_stage1,
+        lr=args.lr_stage1,
+        checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
+    )
 
     if args.run_finetune:
         stage2_result = fit_stage(
