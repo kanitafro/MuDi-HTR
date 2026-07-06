@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -104,6 +105,126 @@ class CRNN(nn.Module):
         sequence = self.sequence_dropout(sequence)
         logits = self.classifier(sequence)
         return logits.permute(1, 0, 2)
+
+    @staticmethod
+    def _logsumexp(values: list[float]) -> float:
+        finite_values = [value for value in values if value > -np.inf]
+        if not finite_values:
+            return -np.inf
+        max_value = max(finite_values)
+        return float(max_value + np.log(sum(np.exp(value - max_value) for value in finite_values)))
+
+    @classmethod
+    def _ctc_beam_search_single(
+        cls,
+        log_probs: np.ndarray,
+        alphabet: list[str],
+        beam_width: int = 10,
+        blank_index: int = 0,
+    ) -> tuple[str, float]:
+        if log_probs.ndim != 2:
+            raise ValueError(f"Expected 2D log-probabilities (T, C), got shape {log_probs.shape}")
+        if log_probs.shape[1] != len(alphabet):
+            raise ValueError(f"Alphabet size {len(alphabet)} does not match logits classes {log_probs.shape[1]}")
+
+        beams: dict[tuple[int, ...], tuple[float, float]] = {(): (0.0, -np.inf)}
+        candidate_width = min(max(beam_width * 2, 10), max(1, log_probs.shape[1] - 1))
+
+        for timestep in log_probs:
+            next_beams: dict[tuple[int, ...], tuple[float, float]] = {}
+            top_indices = np.argsort(timestep)[::-1][:candidate_width]
+
+            def update(
+                prefix: tuple[int, ...],
+                blank_score: float | None = None,
+                nonblank_score: float | None = None,
+            ) -> None:
+                existing_blank, existing_nonblank = next_beams.get(prefix, (-np.inf, -np.inf))
+                if blank_score is not None:
+                    existing_blank = cls._logsumexp([existing_blank, blank_score])
+                if nonblank_score is not None:
+                    existing_nonblank = cls._logsumexp([existing_nonblank, nonblank_score])
+                next_beams[prefix] = (existing_blank, existing_nonblank)
+
+            for prefix, (p_blank, p_nonblank) in beams.items():
+                total = cls._logsumexp([p_blank, p_nonblank])
+                update(prefix, blank_score=total + float(timestep[blank_index]))
+
+                for class_index in top_indices:
+                    if class_index == blank_index:
+                        continue
+                    score = float(timestep[class_index])
+                    if prefix and prefix[-1] == class_index:
+                        update(prefix, nonblank_score=p_nonblank + score)
+                        update(prefix + (class_index,), nonblank_score=p_blank + score)
+                    else:
+                        update(prefix + (class_index,), nonblank_score=total + score)
+
+            beams = dict(
+                sorted(
+                    next_beams.items(),
+                    key=lambda item: cls._logsumexp([item[1][0], item[1][1]]),
+                    reverse=True,
+                )[:beam_width]
+            )
+
+        best_prefix, (best_blank, best_nonblank) = max(
+            beams.items(),
+            key=lambda item: cls._logsumexp([item[1][0], item[1][1]]),
+        )
+        best_score = cls._logsumexp([best_blank, best_nonblank])
+        total_score = cls._logsumexp([cls._logsumexp([blank, nonblank]) for blank, nonblank in beams.values()])
+
+        characters: list[str] = []
+        last_token: int | None = None
+        for token in best_prefix:
+            if token == blank_index or token == last_token:
+                last_token = token
+                continue
+            last_token = token
+            if 0 <= token < len(alphabet):
+                token_text = alphabet[token]
+                if token_text not in {"<BLANK>", "<UNK>"}:
+                    characters.append(token_text)
+
+        confidence = float(np.exp(best_score - total_score)) if total_score > -np.inf else 0.0
+        return "".join(characters), confidence
+
+    def decode_beam_search(
+        self,
+        logits: torch.Tensor,
+        alphabet: list[str],
+        beam_width: int = 10,
+        blank_index: int = 0,
+    ) -> list[tuple[str, float]]:
+        """Decode CTC logits with a pure Python/NumPy beam search.
+
+        Args:
+            logits: CTC logits with shape (T, B, C) or (T, C).
+            alphabet: Token list where index 0 is the blank symbol.
+            beam_width: Beam width for the prefix search.
+            blank_index: Index of the blank token.
+
+        Returns:
+            A list of (text, probability) tuples, one per batch item.
+        """
+
+        if logits.ndim == 2:
+            logits = logits.unsqueeze(1)
+        if logits.ndim != 3:
+            raise ValueError(f"Expected logits with shape (T, B, C) or (T, C), got {tuple(logits.shape)}")
+
+        log_probs = torch.log_softmax(logits, dim=-1).detach().cpu().numpy()
+        decoded: list[tuple[str, float]] = []
+        for batch_index in range(log_probs.shape[1]):
+            text, probability = self._ctc_beam_search_single(
+                log_probs[:, batch_index, :],
+                alphabet=alphabet,
+                beam_width=beam_width,
+                blank_index=blank_index,
+            )
+            decoded.append((text, probability))
+        return decoded
 
 if __name__ == "__main__":
     model = CRNN(num_classes=80)
