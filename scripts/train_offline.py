@@ -2,7 +2,7 @@
 
 Two-stage domain adaptation:
 - Stage 1: pretrain on synthetic OpenHand-Synth
-- Stage 2: fine-tune on the Kaggle handwriting recognition dataset when explicitly enabled
+- Stage 2: fine-tune on the GNHK handwriting dataset when explicitly enabled
 
 The script stores structured metrics, best checkpoints per stage, and
 report-ready evaluation artifacts for the final fine-tuned model.
@@ -37,7 +37,7 @@ ERROR_LOG_PATH = RESULTS_ROOT / "error_analysis.txt"
 LATEX_TABLE_PATH = RESULTS_ROOT / "report_summary.tex"
 
 DEFAULT_STAGE1_DATASET_PATH = Path("data/processed/offline/openhand_synth")
-DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/kaggle_handwriting_recognition")
+DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/gnhk")
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
@@ -213,7 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stage2-dataset-path",
         default=str(DEFAULT_STAGE2_DATASET_PATH),
-        help="Processed Kaggle handwriting recognition root containing train/val/test splits.",
+        help="Processed GNHK root containing train/test splits (validation can be carved from train).",
     )
     parser.add_argument("--stage2-train-split", default="train", help="Training split for stage 2.")
     parser.add_argument("--stage2-val-split", default="auto", help="Validation split for stage 2. Use 'auto' to carve out a held-out subset from train.")

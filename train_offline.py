@@ -2,7 +2,7 @@
 
 Two-stage domain adaptation:
 - Stage 1: pretrain on synthetic OpenHand-Synth
-- Stage 2: fine-tune on the Kaggle handwriting recognition dataset when explicitly enabled
+- Stage 2: fine-tune on the GNHK handwriting dataset when explicitly enabled
 
 The script stores structured metrics, best checkpoints per stage, and
 report-ready evaluation artifacts for the final fine-tuned model.
@@ -31,7 +31,7 @@ from models.offline import (
 RESULTS_ROOT = Path("experiments/results/offline")
 CHECKPOINT_ROOT = Path("checkpoints/offline")
 DEFAULT_STAGE1_DATASET = "to-be/OpenHand-Synth"
-DEFAULT_STAGE2_DATASET = "Kaggle/handwriting-recognition"
+DEFAULT_STAGE2_DATASET = "GNHK"
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 

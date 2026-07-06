@@ -97,6 +97,10 @@ def _extract_rows(csv_path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def _row_keys(row: dict[str, str]) -> list[str]:
+    return [str(key).strip().lower() for key in row.keys()]
+
+
 def _get_row_value(row: dict[str, str], candidates: Iterable[str]) -> str | None:
     lower_row = {str(key).strip().lower(): value for key, value in row.items()}
     for candidate in candidates:
@@ -106,10 +110,23 @@ def _get_row_value(row: dict[str, str], candidates: Iterable[str]) -> str | None
     return None
 
 
+def _extract_first_two_columns(row: dict[str, str]) -> tuple[str | None, str | None]:
+    values = [str(value).strip() for value in row.values() if str(value).strip()]
+    if len(values) >= 2:
+        return values[0], values[1]
+    if len(values) == 1:
+        return values[0], None
+    return None, None
+
+
 def _extract_text(row: dict[str, str]) -> str:
     value = _get_row_value(row, TEXT_COLUMNS)
     if value is not None:
         return value
+    if len(row) == 2:
+        _, text_value = _extract_first_two_columns(row)
+        if text_value:
+            return text_value
     raise KeyError(f"Could not find a transcription column in row keys: {list(row.keys())!r}")
 
 
@@ -117,6 +134,10 @@ def _extract_image_name(row: dict[str, str]) -> str:
     value = _get_row_value(row, IMAGE_COLUMNS)
     if value is not None:
         return value
+    if len(row) == 2:
+        image_value, _ = _extract_first_two_columns(row)
+        if image_value:
+            return image_value
     raise KeyError(f"Could not find an image column in row keys: {list(row.keys())!r}")
 
 

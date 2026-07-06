@@ -1,4 +1,7 @@
-"""Offline handwriting preprocessing entrypoint using Hugging Face streaming."""
+"""Stage-1 offline handwriting preprocessing entrypoint using Hugging Face streaming.
+
+This helper keeps the existing OpenHand-Synth pretraining path intact.
+"""
 
 from __future__ import annotations
 

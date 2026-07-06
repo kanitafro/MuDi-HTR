@@ -24,7 +24,7 @@ from models.offline import (
 
 
 DEFAULT_DATA_ROOT = Path("data/processed/offline")
-DEFAULT_DATASET_NAME = "Kaggle/handwriting-recognition"
+DEFAULT_DATASET_NAME = "GNHK"
 DEFAULT_CHECKPOINT = Path("checkpoints/offline/pretrained.pth")
 DEFAULT_TEST_SPLIT = "test"
 

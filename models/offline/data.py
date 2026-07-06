@@ -312,7 +312,6 @@ def resolve_processed_dataset_root(root_dir: str | Path, dataset_name: str) -> P
     if "finevision" in normalized:
         candidate_names.append("iam_handwriting_finevision")
     if "gnhk" in normalized:
-        candidate_names.append("iam_handwriting_finevision")
         candidate_names.append("gnhk")
 
     candidate_names.append(dataset_name.replace("/", "_").replace("-", "_").lower())
