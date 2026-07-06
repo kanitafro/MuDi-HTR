@@ -442,10 +442,6 @@ def main() -> None:
             device=device,
             checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
         )
-        freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
-        backbone_lr_scale=args.stage2_backbone_lr_scale,
-        head_lr_scale=args.stage2_head_lr_scale,
-    )
 
     summary = {
         "device": str(device),
