@@ -1,14 +1,15 @@
+# models/online/dataset.py
 """
 PyTorch Dataset for online handwriting recognition.
 Supports both DIDI and IAM-OnDB datasets.
 """
 
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any
-
 
 class OnlineHandwritingDataset(Dataset):
     """
@@ -18,26 +19,29 @@ class OnlineHandwritingDataset(Dataset):
     """
     
     def __init__(self, data_path: Path, split: str, max_seq_len: int = None, dataset_name: str = None):
-        """
-        Args:
-            data_path: Path to directory containing split .pt files
-            split: One of 'train', 'validation', 'test'
-            max_seq_len: Maximum sequence length (for truncation/padding)
-            dataset_name: Optional name for logging ('didi' or 'iam_ondb')
-        """
         self.data_path = Path(data_path)
         self.split = split
         self.max_seq_len = max_seq_len
         self.dataset_name = dataset_name or data_path.parent.name
         
-        # Load the preprocessed data
+        # Load preprocessed data
         file_path = self.data_path / f"{split}.pt"
         if not file_path.exists():
             raise FileNotFoundError(f"Data file not found: {file_path}")
-        
-        # Load with weights_only=False because our .pt files contain data, not model weights
         self.data = torch.load(file_path, weights_only=False)
         print(f"Loaded {len(self.data)} samples from {self.dataset_name} {split} split")
+        
+        # --- Load global feature statistics (if they exist) ---
+        stats_path = Path(__file__).parent / "feature_stats.pt"
+        if stats_path.exists():
+            stats = torch.load(stats_path, weights_only=False)
+            self.global_mean = stats['mean']
+            self.global_std = stats['std']
+            print(f"✅ Loaded global stats: mean={self.global_mean}, std={self.global_std}")
+        else:
+            self.global_mean = None
+            self.global_std = None
+            print("⚠️ Global stats not found; skipping normalization")
         
     def __len__(self):
         return len(self.data)
@@ -59,14 +63,64 @@ class OnlineHandwritingDataset(Dataset):
                 # If it's a list or other type, convert
                 tensor_strokes.append(torch.tensor(stroke, dtype=torch.float32))
         
-        # Concatenate all strokes into a single sequence
+        ## Concatenate all strokes into a single sequence
         # Shape: (total_points, 3)
-        sequence = torch.cat(tensor_strokes, dim=0)
+        sequence = torch.cat(tensor_strokes, dim=0)  # (seq_len, 3)
+        
+        # --- EXTRACT RAW FEATURES ---
+        x = sequence[:, 0]          # (seq_len,)
+        y = sequence[:, 1]          # (seq_len,)
+        pen = sequence[:, 2]        # (seq_len,) - 0=down, 1=up
+        
+        # --- COMPUTE DERIVATIVES (Step 1) ---
+        # 1. Differential coordinates (dx, dy)
+        dx = torch.diff(x, prepend=x[0:1])   # Pad first value with itself
+        dy = torch.diff(y, prepend=y[0:1])   # Pad first value with itself
+        
+        # 2. Log magnitude (add epsilon to avoid log(0))
+        r = torch.sqrt(dx**2 + dy**2) + 1e-8
+        log_r = torch.log(r)
+        
+        # 3. Angle (direction of pen movement)
+        angle = torch.atan2(dy, dx)
+        
+        # 4. Pen state flags (explicit up/down)
+        pen_up = (pen == 1).float()          # 1 if pen is up
+        pen_down = (pen == 0).float()        # 1 if pen is down
+        
+        # --- STACK INTO NEW FEATURE VECTOR (6 features) ---
+        sequence = torch.stack([dx, dy, log_r, angle, pen_up, pen_down], dim=1)
+        
+        # --- NORMALIZE USING GLOBAL STATS (NOT per-sample) ---
+        if self.global_mean is not None and self.global_std is not None:
+            # Normalize only features 0-3 (dx, dy, log_r, angle)
+            # Keep pen flags (4,5) unchanged (0 or 1)
+            sequence[:, :4] = (sequence[:, :4] - self.global_mean) / self.global_std
+        
+        # Shape: (seq_len, 6)
         
         # Optional: truncate long sequences
-        if self.max_seq_len is not None and sequence.shape[0] > self.max_seq_len:
-            sequence = sequence[:self.max_seq_len]
+        #if self.max_seq_len is not None and sequence.shape[0] > self.max_seq_len:
+        #    sequence = sequence[:self.max_seq_len]
+
+        # --- DATA AUGMENTATION (only for training) ---
+        max_angle_deg = 8   # in degrees
+        max_angle = max_angle_deg * 3.14159 / 180   # in radians
+        angle_rot = (torch.rand(1) - 0.5) * 2 * max_angle
         
+        if self.split == 'train':
+            # random scaling
+            scale = 0.9 + 0.2 * torch.rand(1) # scale 0.9-1.1
+            sequence[:, :2] *= scale
+            # random rotation
+            #angle_rot = torch.randn(1) * 0.15
+            angle_rot = (torch.rand(1) - 0.5) * 2 * max_angle
+            rot_matrix = torch.tensor([[torch.cos(angle_rot), -torch.sin(angle_rot)],
+                                       [torch.sin(angle_rot), torch.cos(angle_rot)]])
+            sequence[:, :2] = sequence[:, :2] @ rot_matrix
+            # small noise
+            sequence[:, :2] += torch.randn_like(sequence[:, :2]) * 0.005
+            
         # Get text label
         text = sample.get('text', '')
         
