@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.offline import CRNN, build_text_encoder_for_dataset_paths, create_offline_dataloader
+from models.offline import resolve_processed_dataset_root
 
 
 RESULTS_ROOT = Path("experiments/results/offline")
@@ -227,6 +228,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs-stage1", type=int, default=25, help="Pretraining epochs.")
     parser.add_argument("--epochs-stage2", type=int, default=60, help="Fine-tuning epochs.")
     parser.add_argument("--run-finetune", action="store_true", help="Run the stage 2 fine-tuning phase after pretraining.")
+    parser.add_argument("--skip-stage1", action="store_true", help="Skip stage 1 training and load an existing pretrained checkpoint.")
+    parser.add_argument("--pretrained-checkpoint", default=str(CHECKPOINT_ROOT / "pretrained.pth"), help="Path to an existing pretrained checkpoint used when --skip-stage1 is enabled.")
+    parser.add_argument("--dataset-name", default=None, help="Compatibility alias for the stage 2 dataset name or processed root.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
     parser.add_argument("--lr-stage2", type=float, default=2e-5, help="Learning rate for stage 2.")
     parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
@@ -442,8 +446,11 @@ def run_epoch(
 
 
 def build_loaders(args: argparse.Namespace, encoder):
+    stage1_root = Path(args.stage1_dataset_path)
+    stage2_root = resolve_processed_dataset_root(args.data_root, args.dataset_name) if args.dataset_name else Path(args.stage2_dataset_path)
+
     stage1_train = create_offline_dataloader(
-        dataset_path=args.stage1_dataset_path,
+        dataset_path=stage1_root,
         split=args.stage1_train_split,
         text_encoder=encoder,
         batch_size=args.batch_size,
@@ -453,7 +460,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         augment=True,
     )
     stage1_val = create_offline_dataloader(
-        dataset_path=args.stage1_dataset_path,
+        dataset_path=stage1_root,
         split=args.stage1_val_split,
         text_encoder=encoder,
         batch_size=args.batch_size,
@@ -462,7 +469,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         max_samples=args.stage1_val_max_samples,
     )
     if args.stage2_val_split == "auto":
-        stage2_sample_paths = sorted((Path(args.stage2_dataset_path) / "train").glob("sample_*.pt"))
+        stage2_sample_paths = sorted((stage2_root / "train").glob("sample_*.pt"))
         if args.stage2_max_samples is not None:
             stage2_sample_paths = stage2_sample_paths[:args.stage2_max_samples]
         stage2_train_paths, stage2_val_paths = split_sample_paths(
@@ -471,7 +478,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             seed=args.seed,
         )
         stage2_train = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -481,7 +488,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             augment=True,
         )
         stage2_val = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split="val",
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -491,7 +498,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         )
     else:
         stage2_train = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -501,7 +508,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             augment=True,
         )
         stage2_val = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_val_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
