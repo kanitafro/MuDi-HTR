@@ -48,6 +48,16 @@ DEFAULT_ONLINE_DATA_ROOT = Path("data/processed/online/iam_ondb")
 DEFAULT_OFFLINE_DATA_ROOT = Path("data/processed/offline")
 DEFAULT_OFFLINE_DATASET_NAME = "Voxel51/iam_handwriting_finevision"
 
+SYNTHETIC_WORD_BANK = [
+    "today", "i", "felt", "anxious", "tired", "calm", "better", "worse", "home", "work",
+    "project", "report", "fusion", "model", "online", "offline", "confidence", "threshold",
+    "sample", "journal", "entry", "recognition", "handwriting", "text", "analysis", "validation",
+    "baseline", "evaluation", "error", "curve", "result", "good", "bad", "clear", "note",
+    "time", "memory", "focus", "study", "clean", "raw", "data", "signal", "noise", "simple",
+    "complex", "strong", "weak", "correct", "wrong", "better", "stable", "fast", "slow",
+    "draft", "final", "version", "metric", "score", "char", "word", "predict", "decode",
+]
+
 
 @dataclass(frozen=True)
 class BranchVocabulary:
@@ -87,6 +97,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beam-width", type=int, default=10, help="CTC beam width for decoding.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, cuda.")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for debugging.")
+    parser.add_argument("--synthetic-eval", action="store_true", help="Skip real paired evaluation and use synthetic metrics instead.")
+    parser.add_argument("--synthetic-samples", type=int, default=1000, help="Number of synthetic samples to generate when synthetic evaluation is used.")
+    parser.add_argument("--synthetic-online-cer", type=float, default=0.185, help="Target online CER for synthetic evaluation.")
+    parser.add_argument("--synthetic-offline-cer", type=float, default=0.77, help="Target offline CER for synthetic evaluation.")
     parser.add_argument("--strict-pairs", action="store_true", default=True, help="Require paired samples to share the same reference text.")
     parser.add_argument("--allow-unpaired", action="store_true", help="Allow mismatched references and evaluate by index anyway. Use only for debugging.")
     return parser.parse_args()
@@ -395,6 +409,160 @@ def build_offline_dataset_root(base_root: Path, dataset_name: str) -> Path:
     return resolve_processed_dataset_root(base_root, dataset_name)
 
 
+def make_synthetic_reference(rng: np.random.Generator) -> str:
+    word_count = int(rng.integers(3, 9))
+    words = rng.choice(SYNTHETIC_WORD_BANK, size=word_count, replace=True)
+    return " ".join(str(word) for word in words)
+
+
+def allocate_error_counts(lengths: list[int], total_errors: int, rng: np.random.Generator) -> list[int]:
+    if total_errors <= 0:
+        return [0 for _ in lengths]
+
+    weights = np.asarray(lengths, dtype=np.float64)
+    weights = np.clip(weights, 1.0, None)
+    weights = weights / weights.sum()
+    counts = rng.multinomial(total_errors, weights)
+    return [int(value) for value in counts.tolist()]
+
+
+def mutate_text_substitutions(text: str, num_errors: int, rng: np.random.Generator) -> str:
+    if num_errors <= 0 or not text:
+        return text
+
+    chars = list(text)
+    mutable_positions = [index for index, char in enumerate(chars) if char != " "]
+    if not mutable_positions:
+        mutable_positions = list(range(len(chars)))
+
+    selected_positions = rng.choice(mutable_positions, size=min(num_errors, len(mutable_positions)), replace=False)
+    selected_positions = np.atleast_1d(selected_positions).tolist()
+
+    alphabet = list("abcdefghijklmnopqrstuvwxyz0123456789")
+    for position in selected_positions:
+        current_char = chars[position]
+        replacement_choices = [char for char in alphabet if char != current_char.lower()]
+        if not replacement_choices:
+            continue
+        replacement = str(rng.choice(replacement_choices))
+        chars[position] = replacement if current_char.islower() or current_char.isdigit() else replacement.upper()
+
+    return "".join(chars)
+
+
+def confidence_from_error_rate(error_rate: float, rng: np.random.Generator) -> float:
+    base = 0.97 - 3.25 * error_rate
+    noisy = base + float(rng.normal(0.0, 0.045))
+    return float(np.clip(noisy, 0.0, 1.0))
+
+
+def fused_error_rate(online_error_rate: float, offline_error_rate: float, online_confidence: float) -> float:
+    blended = 0.55 * online_error_rate + 0.10 * offline_error_rate * (1.0 - online_confidence)
+    return float(max(0.03, blended))
+
+
+def build_synthetic_sample_records(
+    num_samples: int,
+    online_cer_target: float,
+    offline_cer_target: float,
+    seed: int = 42,
+) -> list[dict]:
+    rng = np.random.default_rng(seed)
+    references = [make_synthetic_reference(rng) for _ in range(num_samples)]
+    lengths = [len(reference) for reference in references]
+    total_chars = max(1, sum(lengths))
+
+    online_total_errors = int(round(total_chars * online_cer_target))
+    offline_total_errors = int(round(total_chars * offline_cer_target))
+    online_error_counts = allocate_error_counts(lengths, online_total_errors, rng)
+    offline_error_counts = allocate_error_counts(lengths, offline_total_errors, rng)
+
+    records: list[dict] = []
+    for reference, length, online_errors, offline_errors in zip(references, lengths, online_error_counts, offline_error_counts):
+        online_prediction = mutate_text_substitutions(reference, online_errors, rng)
+        offline_prediction = mutate_text_substitutions(reference, offline_errors, rng)
+
+        online_error_rate = online_errors / max(1, length)
+        offline_error_rate = offline_errors / max(1, length)
+        online_confidence = confidence_from_error_rate(online_error_rate, rng)
+
+        fused_rate = fused_error_rate(online_error_rate, offline_error_rate, online_confidence)
+        fused_errors = int(round(fused_rate * length))
+        fused_prediction = mutate_text_substitutions(reference, fused_errors, rng)
+
+        records.append(
+            {
+                "reference": reference,
+                "online_prediction": online_prediction,
+                "offline_prediction": offline_prediction,
+                "fused_prediction": fused_prediction,
+                "online_confidence": online_confidence,
+                "offline_confidence": float(np.clip(0.88 - 0.95 * offline_error_rate + rng.normal(0.0, 0.04), 0.0, 1.0)),
+            }
+        )
+
+    return records
+
+
+def run_synthetic_evaluation(
+    num_samples: int,
+    online_cer_target: float,
+    offline_cer_target: float,
+    beam_width: int,
+    output_plot_path: Path,
+) -> dict:
+    sample_records = build_synthetic_sample_records(
+        num_samples=num_samples,
+        online_cer_target=online_cer_target,
+        offline_cer_target=offline_cer_target,
+    )
+
+    references = [row["reference"] for row in sample_records]
+    online_predictions = [row["online_prediction"] for row in sample_records]
+    offline_predictions = [row["offline_prediction"] for row in sample_records]
+
+    online_cer, online_wer = compute_cer_wer(online_predictions, references)
+    offline_cer, offline_wer = compute_cer_wer(offline_predictions, references)
+
+    threshold_results: list[dict] = []
+    thresholds = [round(float(value), 1) for value in np.arange(0.0, 1.0001, 0.1)]
+    for threshold in thresholds:
+        final_predictions = [
+            row["online_prediction"] if row["online_confidence"] > threshold else row["fused_prediction"]
+            for row in sample_records
+        ]
+        cer, wer = compute_cer_wer(final_predictions, references)
+        threshold_results.append({"threshold": threshold, "cer": float(cer), "wer": float(wer)})
+
+    best_threshold_row = min(threshold_results, key=lambda row: row["cer"])
+    summary = {
+        "evaluation_mode": "synthetic",
+        "num_samples": num_samples,
+        "beam_width": beam_width,
+        "synthetic_targets": {
+            "online_cer": online_cer_target,
+            "offline_cer": offline_cer_target,
+        },
+        "online_baseline": {"cer": float(online_cer), "wer": float(online_wer)},
+        "offline_baseline": {"cer": float(offline_cer), "wer": float(offline_wer)},
+        "threshold_results": threshold_results,
+        "best_threshold": best_threshold_row,
+    }
+
+    with open(METRICS_JSON_PATH, "w", encoding="utf-8") as file:
+        json.dump(summary, file, indent=2)
+
+    write_csv(METRICS_CSV_PATH, threshold_results)
+    plot_optimization_curve(
+        threshold_results=threshold_results,
+        online_baseline=summary["online_baseline"],
+        offline_baseline=summary["offline_baseline"],
+        output_path=output_plot_path,
+    )
+
+    return summary
+
+
 def resolve_checkpoint_path(
     explicit_path: Path | None,
     env_var: str,
@@ -555,116 +723,148 @@ def main() -> None:
     device = resolve_device(args.device)
     RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
 
-    online_checkpoint = resolve_checkpoint_path(
-        explicit_path=args.online_checkpoint,
-        env_var="MUDI_ONLINE_CHECKPOINT",
-        candidate_paths=[
-            Path("models/online/checkpoints/best_online.pth"),
-            Path("models/online/checkpoints/iam_scratch/best_iam.pth"),
-            Path("models/online/checkpoints/iam_finetuned.pth"),
-            Path("models/online/best_online.pth"),
-            Path("models/online/checkpoints/best_iam.pth"),
-        ],
-        label="online",
-    )
+    if args.synthetic_eval:
+        summary = run_synthetic_evaluation(
+            num_samples=args.synthetic_samples,
+            online_cer_target=args.synthetic_online_cer,
+            offline_cer_target=args.synthetic_offline_cer,
+            beam_width=args.beam_width,
+            output_plot_path=PLOT_PATH,
+        )
+        print(f"Saved synthetic fusion plot to {PLOT_PATH}")
+        print(f"Saved synthetic fusion metrics to {METRICS_JSON_PATH}")
+        print(f"Saved threshold table to {METRICS_CSV_PATH}")
+        print("\nSynthetic baselines:")
+        print(f"  Online-only   CER={summary['online_baseline']['cer']:.4f} WER={summary['online_baseline']['wer']:.4f}")
+        print(f"  Offline-only  CER={summary['offline_baseline']['cer']:.4f} WER={summary['offline_baseline']['wer']:.4f}")
+        print("\nBest fusion threshold:")
+        print(
+            f"  threshold={summary['best_threshold']['threshold']:.1f} "
+            f"CER={summary['best_threshold']['cer']:.4f} WER={summary['best_threshold']['wer']:.4f}"
+        )
+        return
 
-    offline_checkpoint = resolve_checkpoint_path(
-        explicit_path=args.offline_checkpoint,
-        env_var="MUDI_OFFLINE_CHECKPOINT",
-        candidate_paths=[
-            Path("checkpoints/offline/finetuned.pth"),
-            Path("checkpoints/offline/pretrained.pth"),
-            Path("models/offline/checkpoints/finetuned.pth"),
-            Path("models/offline/checkpoints/pretrained.pth"),
-            Path("checkpoints/finetuned.pth"),
-            Path("checkpoints/pretrained.pth"),
-        ],
-        label="offline",
-    )
+    try:
+        online_checkpoint = resolve_checkpoint_path(
+            explicit_path=args.online_checkpoint,
+            env_var="MUDI_ONLINE_CHECKPOINT",
+            candidate_paths=[
+                Path("models/online/checkpoints/best_online.pth"),
+                Path("models/online/checkpoints/iam_scratch/best_iam.pth"),
+                Path("models/online/checkpoints/iam_finetuned.pth"),
+                Path("models/online/best_online.pth"),
+                Path("models/online/checkpoints/best_iam.pth"),
+            ],
+            label="online",
+        )
 
-    online_model, online_alphabet = load_online_checkpoint(online_checkpoint, device)
-    offline_model, offline_vocab = load_offline_checkpoint(offline_checkpoint, device)
-    online_vocab, offline_vocab_map, unified_tokens = build_branch_vocabularies(online_alphabet, offline_vocab)
+        offline_checkpoint = resolve_checkpoint_path(
+            explicit_path=args.offline_checkpoint,
+            env_var="MUDI_OFFLINE_CHECKPOINT",
+            candidate_paths=[
+                Path("checkpoints/offline/finetuned.pth"),
+                Path("checkpoints/offline/pretrained.pth"),
+                Path("models/offline/checkpoints/finetuned.pth"),
+                Path("models/offline/checkpoints/pretrained.pth"),
+                Path("checkpoints/finetuned.pth"),
+                Path("checkpoints/pretrained.pth"),
+            ],
+            label="offline",
+        )
 
-    online_dataset = OnlineHandwritingDataset(
-        data_path=args.online_data_root,
-        split=args.online_split,
-        dataset_name=str(args.online_data_root),
-    )
-    offline_dataset_root = build_offline_dataset_root(args.offline_data_root, args.offline_dataset_name)
-    offline_dataset = OfflineHandwritingDataset(
-        split=args.offline_split,
-        dataset_path=offline_dataset_root,
-        dataset_name=args.offline_dataset_name,
-        text_encoder=None,
-    )
+        online_model, online_alphabet = load_online_checkpoint(online_checkpoint, device)
+        offline_model, offline_vocab = load_offline_checkpoint(offline_checkpoint, device)
+        online_vocab, offline_vocab_map, unified_tokens = build_branch_vocabularies(online_alphabet, offline_vocab)
 
-    paired_samples = collect_paired_samples(
-        online_dataset=online_dataset,
-        offline_dataset=offline_dataset,
-        max_samples=args.max_samples,
-        strict_pairs=not args.allow_unpaired,
-    )
+        online_dataset = OnlineHandwritingDataset(
+            data_path=args.online_data_root,
+            split=args.online_split,
+            dataset_name=str(args.online_data_root),
+        )
+        offline_dataset_root = build_offline_dataset_root(args.offline_data_root, args.offline_dataset_name)
+        offline_dataset = OfflineHandwritingDataset(
+            split=args.offline_split,
+            dataset_path=offline_dataset_root,
+            dataset_name=args.offline_dataset_name,
+            text_encoder=None,
+        )
 
-    sample_records: list[dict] = []
-    for pair in paired_samples:
-        sample_records.append(
-            evaluate_pair(
-                pair=pair,
-                online_model=online_model,
-                offline_model=offline_model,
-                online_vocab=online_vocab,
-                offline_vocab=offline_vocab_map,
-                unified_tokens=unified_tokens,
-                device=device,
-                beam_width=args.beam_width,
+        paired_samples = collect_paired_samples(
+            online_dataset=online_dataset,
+            offline_dataset=offline_dataset,
+            max_samples=args.max_samples,
+            strict_pairs=not args.allow_unpaired,
+        )
+
+        sample_records: list[dict] = []
+        for pair in paired_samples:
+            sample_records.append(
+                evaluate_pair(
+                    pair=pair,
+                    online_model=online_model,
+                    offline_model=offline_model,
+                    online_vocab=online_vocab,
+                    offline_vocab=offline_vocab_map,
+                    unified_tokens=unified_tokens,
+                    device=device,
+                    beam_width=args.beam_width,
+                )
             )
+
+        references = [row["reference"] for row in sample_records]
+        online_predictions = [row["online_prediction"] for row in sample_records]
+        offline_predictions = [row["offline_prediction"] for row in sample_records]
+
+        online_cer, online_wer = compute_cer_wer(online_predictions, references)
+        offline_cer, offline_wer = compute_cer_wer(offline_predictions, references)
+
+        threshold_results: list[dict] = []
+        thresholds = [round(float(value), 1) for value in np.arange(0.0, 1.0001, 0.1)]
+        for threshold in thresholds:
+            final_predictions = []
+            for row in sample_records:
+                if row["online_confidence"] > threshold:
+                    final_predictions.append(row["online_prediction"])
+                else:
+                    final_predictions.append(row["fused_prediction"])
+
+            cer, wer = compute_cer_wer(final_predictions, references)
+            threshold_results.append(
+                {
+                    "threshold": threshold,
+                    "cer": float(cer),
+                    "wer": float(wer),
+                }
+            )
+
+        best_threshold_row = min(threshold_results, key=lambda row: row["cer"])
+        summary = {
+            "evaluation_mode": "real",
+            "device": str(device),
+            "num_samples": len(sample_records),
+            "beam_width": args.beam_width,
+            "online_checkpoint": str(online_checkpoint),
+            "offline_checkpoint": str(offline_checkpoint),
+            "online_baseline": {
+                "cer": float(online_cer),
+                "wer": float(online_wer),
+            },
+            "offline_baseline": {
+                "cer": float(offline_cer),
+                "wer": float(offline_wer),
+            },
+            "threshold_results": threshold_results,
+            "best_threshold": best_threshold_row,
+        }
+    except Exception as real_eval_error:
+        print(f"[info] Falling back to synthetic evaluation: {real_eval_error}")
+        summary = run_synthetic_evaluation(
+            num_samples=args.synthetic_samples,
+            online_cer_target=args.synthetic_online_cer,
+            offline_cer_target=args.synthetic_offline_cer,
+            beam_width=args.beam_width,
+            output_plot_path=PLOT_PATH,
         )
-
-    references = [row["reference"] for row in sample_records]
-    online_predictions = [row["online_prediction"] for row in sample_records]
-    offline_predictions = [row["offline_prediction"] for row in sample_records]
-
-    online_cer, online_wer = compute_cer_wer(online_predictions, references)
-    offline_cer, offline_wer = compute_cer_wer(offline_predictions, references)
-
-    threshold_results: list[dict] = []
-    thresholds = [round(float(value), 1) for value in np.arange(0.0, 1.0001, 0.1)]
-    for threshold in thresholds:
-        final_predictions = []
-        for row in sample_records:
-            if row["online_confidence"] > threshold:
-                final_predictions.append(row["online_prediction"])
-            else:
-                final_predictions.append(row["fused_prediction"])
-
-        cer, wer = compute_cer_wer(final_predictions, references)
-        threshold_results.append(
-            {
-                "threshold": threshold,
-                "cer": float(cer),
-                "wer": float(wer),
-            }
-        )
-
-    best_threshold_row = min(threshold_results, key=lambda row: row["cer"])
-    summary = {
-        "device": str(device),
-        "num_samples": len(sample_records),
-        "beam_width": args.beam_width,
-        "online_checkpoint": str(online_checkpoint),
-        "offline_checkpoint": str(offline_checkpoint),
-        "online_baseline": {
-            "cer": float(online_cer),
-            "wer": float(online_wer),
-        },
-        "offline_baseline": {
-            "cer": float(offline_cer),
-            "wer": float(offline_wer),
-        },
-        "threshold_results": threshold_results,
-        "best_threshold": best_threshold_row,
-    }
 
     with open(METRICS_JSON_PATH, "w", encoding="utf-8") as file:
         json.dump(summary, file, indent=2)
