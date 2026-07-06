@@ -1,10 +1,11 @@
 """Offline CRNN training for MuDi-HTR.
 
-This script follows the project plan in a compact way:
-- stage 1: pretrain on OpenHand-Synth
-- stage 2: fine-tune on GNHK
-- track CER/WER
-- save checkpoints and a short JSON summary
+Two-stage domain adaptation:
+- Stage 1: pretrain on synthetic OpenHand-Synth
+- Stage 2: fine-tune on the Kaggle handwriting recognition dataset when explicitly enabled
+
+The script stores structured metrics, best checkpoints per stage, and
+report-ready evaluation artifacts for the final fine-tuned model.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from models.offline import (
 RESULTS_ROOT = Path("experiments/results/offline")
 CHECKPOINT_ROOT = Path("checkpoints/offline")
 DEFAULT_STAGE1_DATASET = "to-be/OpenHand-Synth"
-DEFAULT_STAGE2_DATASET = "Voxel51/iam_handwriting_finevision"
+DEFAULT_STAGE2_DATASET = "Kaggle/handwriting-recognition"
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
@@ -52,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size.")
     parser.add_argument("--epochs-stage1", type=int, default=25, help="Pretraining epochs.")
     parser.add_argument("--epochs-stage2", type=int, default=60, help="Fine-tuning epochs.")
+    parser.add_argument("--run-finetune", action="store_true", help="Run stage 2 fine-tuning after pretraining.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
     parser.add_argument("--lr-stage2", type=float, default=2e-5, help="Learning rate for stage 2.")
     parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
@@ -409,28 +411,37 @@ def main() -> None:
     print(f"Stage 1 dataset: {args.stage1_dataset}")
     print(f"Stage 2 dataset: {args.stage2_dataset}")
 
-    stage1_result = fit_stage(
-        stage_name="pretrained",
-        model=model,
-        train_loader=stage1_train,
-        val_loader=stage1_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage1,
-        lr=args.lr_stage1,
-        checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
-    )
-
-    stage2_result = fit_stage(
-        stage_name="finetuned",
-        model=model,
-        train_loader=stage2_train,
-        val_loader=stage2_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage2,
-        lr=args.lr_stage2,
-        checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+    if args.run_finetune:
+        stage2_result = fit_stage(
+            stage_name="finetuned",
+            model=model,
+            train_loader=stage2_train,
+            val_loader=stage2_val,
+            encoder=encoder,
+            device=device,
+            epochs=args.epochs_stage2,
+            lr=args.lr_stage2,
+            checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+            freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
+            backbone_lr_scale=args.stage2_backbone_lr_scale,
+            head_lr_scale=args.stage2_head_lr_scale,
+        )
+        report = build_final_report(
+            model=model,
+            dataloader=stage2_val,
+            encoder=encoder,
+            device=device,
+            checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+        )
+    else:
+        stage2_result = None
+        report = build_final_report(
+            model=model,
+            dataloader=stage1_val,
+            encoder=encoder,
+            device=device,
+            checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
+        )
         freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
         backbone_lr_scale=args.stage2_backbone_lr_scale,
         head_lr_scale=args.stage2_head_lr_scale,

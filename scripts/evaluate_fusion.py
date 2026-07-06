@@ -46,7 +46,7 @@ METRICS_CSV_PATH = RESULTS_ROOT / "fusion_metrics.csv"
 
 DEFAULT_ONLINE_DATA_ROOT = Path("data/processed/online/iam_ondb")
 DEFAULT_OFFLINE_DATA_ROOT = Path("data/processed/offline")
-DEFAULT_OFFLINE_DATASET_NAME = "Voxel51/iam_handwriting_finevision"
+DEFAULT_OFFLINE_DATASET_NAME = "Kaggle/handwriting-recognition"
 
 SYNTHETIC_WORD_BANK = [
     "today", "i", "felt", "anxious", "tired", "calm", "better", "worse", "home", "work",

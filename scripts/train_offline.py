@@ -2,7 +2,7 @@
 
 Two-stage domain adaptation:
 - Stage 1: pretrain on synthetic OpenHand-Synth
-- Stage 2: fine-tune on real GNHK
+- Stage 2: fine-tune on the Kaggle handwriting recognition dataset when explicitly enabled
 
 The script stores structured metrics, best checkpoints per stage, and
 report-ready evaluation artifacts for the final fine-tuned model.
@@ -37,7 +37,7 @@ ERROR_LOG_PATH = RESULTS_ROOT / "error_analysis.txt"
 LATEX_TABLE_PATH = RESULTS_ROOT / "report_summary.tex"
 
 DEFAULT_STAGE1_DATASET_PATH = Path("data/processed/offline/openhand_synth")
-DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/iam_handwriting_finevision")
+DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/kaggle_handwriting_recognition")
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
@@ -213,7 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stage2-dataset-path",
         default=str(DEFAULT_STAGE2_DATASET_PATH),
-        help="Processed IAM FineVision root containing train/val or train/test splits.",
+        help="Processed Kaggle handwriting recognition root containing train/val/test splits.",
     )
     parser.add_argument("--stage2-train-split", default="train", help="Training split for stage 2.")
     parser.add_argument("--stage2-val-split", default="auto", help="Validation split for stage 2. Use 'auto' to carve out a held-out subset from train.")
@@ -226,6 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size.")
     parser.add_argument("--epochs-stage1", type=int, default=25, help="Pretraining epochs.")
     parser.add_argument("--epochs-stage2", type=int, default=60, help="Fine-tuning epochs.")
+    parser.add_argument("--run-finetune", action="store_true", help="Run the stage 2 fine-tuning phase after pretraining.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
     parser.add_argument("--lr-stage2", type=float, default=2e-5, help="Learning rate for stage 2.")
     parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
@@ -635,6 +636,7 @@ def stage_config_summary(args: argparse.Namespace) -> dict:
             "epochs": args.epochs_stage1,
             "learning_rate": args.lr_stage1,
         },
+        "run_finetune": args.run_finetune,
         "stage2": {
             "dataset_path": str(args.stage2_dataset_path),
             "train_split": args.stage2_train_split,
@@ -666,6 +668,7 @@ def build_final_report(
     encoder,
     device: torch.device,
     checkpoint_path: Path,
+    stage_label: str,
     max_error_examples: int = 20,
 ) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -707,7 +710,7 @@ def build_final_report(
             r"\begin{tabular}{lccc}",
                 "Stage & Best epoch & CER & WER " + r"\\",
             r"\hline",
-                f"Final fine-tuned & {checkpoint.get('best_epoch', '?')} & {eval_metrics['cer']:.4f} & {eval_metrics['wer']:.4f} " + r"\\",
+                f"{stage_label} & {checkpoint.get('best_epoch', '?')} & {eval_metrics['cer']:.4f} & {eval_metrics['wer']:.4f} " + r"\\",
             r"\end{tabular}",
             r"\caption{Offline CRNN evaluation summary.}",
             r"\end{table}",
@@ -817,28 +820,42 @@ def main() -> None:
         checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
     )
 
-    stage2_result = fit_stage(
-        stage_name="finetune",
-        model=model,
-        train_loader=stage2_train,
-        val_loader=stage2_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage2,
-        lr=args.lr_stage2,
-        checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
-        freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
-        backbone_lr_scale=args.stage2_backbone_lr_scale,
-        head_lr_scale=args.stage2_head_lr_scale,
-    )
+    if args.run_finetune:
+        stage2_result = fit_stage(
+            stage_name="finetune",
+            model=model,
+            train_loader=stage2_train,
+            val_loader=stage2_val,
+            encoder=encoder,
+            device=device,
+            epochs=args.epochs_stage2,
+            lr=args.lr_stage2,
+            checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+            freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
+            backbone_lr_scale=args.stage2_backbone_lr_scale,
+            head_lr_scale=args.stage2_head_lr_scale,
+        )
+        final_stage_label = "Final fine-tuned"
+        final_checkpoint_path = CHECKPOINT_ROOT / "finetuned.pth"
+        final_dataloader = stage2_val
+    else:
+        stage2_result = None
+        final_stage_label = "Stage 1 pretrain"
+        final_checkpoint_path = CHECKPOINT_ROOT / "pretrained.pth"
+        final_dataloader = stage1_val
 
     report = build_final_report(
         model=model,
-        dataloader=stage2_val,
+        dataloader=final_dataloader,
         encoder=encoder,
         device=device,
-        checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+        checkpoint_path=final_checkpoint_path,
+        stage_label=final_stage_label,
     )
+
+    stage_results = {"pretrain": stage1_result}
+    if stage2_result is not None:
+        stage_results["finetune"] = stage2_result
 
     metrics = {
         "config": stage_config_summary(args),
@@ -847,7 +864,7 @@ def main() -> None:
         "data_analysis": data_analysis,
         "stages": {
             "pretrain": stage1_result,
-            "finetune": stage2_result,
+            **({"finetune": stage2_result} if stage2_result is not None else {}),
         },
         "final_report": {
             "metrics": report["metrics"],
@@ -861,7 +878,7 @@ def main() -> None:
         file.write("\n".join([
             "TRAINING SUMMARY",
             "================",
-            format_stage_summary_table({"pretrain": stage1_result, "finetune": stage2_result}),
+            format_stage_summary_table(stage_results),
             "",
             f"Final CER: {report['metrics']['cer']:.4f}",
             f"Final WER: {report['metrics']['wer']:.4f}",
