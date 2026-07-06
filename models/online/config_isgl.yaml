@@ -1,0 +1,25 @@
+iam:
+  data_dir: "data/processed/online/isgl"
+  alphabet: "_ !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+  
+  model:
+    input_size: 6          # MUST be 6 to match dataset's 6 features (dx, dy, log_r, angle, pen_up, pen_down)
+    hidden_size: 512
+    num_layers: 3
+    num_classes: 96
+    dropout: 0.35          
+
+  training:
+    batch_size: 32
+    learning_rate: 0.001
+    weight_decay: 1e-4
+    epochs: 170
+    scheduler_patience: 15   # Increased from 7 – give the model time to learn
+    scheduler_factor: 0.5    # Increased from 0.3 – gentler LR drops
+    max_seq_len: 500
+    gradient_clip: 1.0
+
+  paths:
+    checkpoint_dir: "models/online/checkpoints_final/isgl" ############## HERE ##################
+    log_dir: "runs/isgl"
+    best_model: "models/online/checkpoints_final/isgl/best_isgl_final.pth" ############## HERE ##################

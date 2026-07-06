@@ -15,7 +15,7 @@ import sys
 from tqdm import tqdm
 import wandb
 
-# pip install torch numpy pyyaml tqdm wandb pathlib matplotlib seaborn tensorboard scikit-learn wandb
+# pip install torch numpy pyyaml tqdm wandb pathlib matplotlib seaborn tensorboard scikit-learn
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))

@@ -3,23 +3,26 @@ iam:
   alphabet: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
   model:
+    type: "transformer"   # or "improved_lstm"
     input_size: 3
     hidden_size: 512
-    num_layers: 3
+    d_model: 512
+    nhead: 8
+    num_layers: 6
     num_classes: 95
-    dropout: 0.4
+    dropout: 0.3
 
   training:
     batch_size: 32
     learning_rate: 0.0001
     weight_decay: 1e-5
-    epochs: 50
+    epochs: 60
     scheduler_patience: 3
     scheduler_factor: 0.3
     max_seq_len: 5000
     gradient_clip: 1.0
 
   paths:
-    checkpoint_dir: "models/online/checkpoints/iam_scratch"
-    log_dir: "runs/iam_scratch"
-    best_model: "models/online/checkpoints/iam_scratch/best_iam.pth"
+    checkpoint_dir: "models/online/checkpoints/iam_transformer"
+    log_dir: "runs/iam_transformer"
+    best_model: "models/online/checkpoints/iam_transformer/best_iam.pth"
