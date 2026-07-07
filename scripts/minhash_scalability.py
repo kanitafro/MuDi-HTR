@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 # Add parent directory for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from minhash_similarity import TextSimilarityIndex
-from synthetic_data import generate_journal_entries
+from cda_similarity.minhash_similarity import TextSimilarityIndex
+from cda_similarity.synthetic_data import generate_journal_entries
 
 def run_scalability_test(sizes: List[int], num_queries: int = 100):
     """
@@ -224,7 +224,7 @@ def test_different_thresholds(num_docs: int = 1000, num_queries: int = 100):
     plt.ylabel('Recall')
     plt.title('Recall vs LSH Threshold')
     plt.grid(True, alpha=0.3)
-    plt.savefig('../experiments/figures/minhash_recall_vs_threshold.png', dpi=150, bbox_inches='tight')
+    plt.savefig('../experiments/figures/minhash_recall_vs_threshold1.png', dpi=150, bbox_inches='tight')
     plt.show()
     
     return results
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     results = run_scalability_test(sizes, num_queries=50)
     
     # Plot scalability
-    plot_scalability(results, save_path=Path("../experiments/figures/minhash_scalability_plot.png"))
+    plot_scalability(results, save_path=Path("../experiments/figures/minhash_scalability_plot1.png"))
     
     # Test recall with improved methodology
     recall = compare_recall(num_docs=1000, num_queries=100)
