@@ -24,8 +24,8 @@ from models.offline import (
 
 
 DEFAULT_DATA_ROOT = Path("data/processed/offline")
-DEFAULT_DATASET_NAME = "Voxel51/iam_handwriting_finevision"
-DEFAULT_CHECKPOINT = Path("checkpoints/offline/finetuned.pth")
+DEFAULT_DATASET_NAME = "GNHK"
+DEFAULT_CHECKPOINT = Path("checkpoints/offline/pretrained.pth")
 DEFAULT_TEST_SPLIT = "test"
 
 

@@ -114,7 +114,21 @@ pip install -r requirements.txt
 
     3b. OFFLINE data prep
 
-    --TO BE ADDED---
+    Stage 1 uses OpenHand-Synth and stays on the existing Hugging Face preprocessing path. Stage 2 uses GNHK and is preprocessed from local JSON/image pairs.
+
+    The GNHK dataset ships as `train` and `test` folders with one JSON file per image and the matching image file next to it.
+
+    Convert it into the processed `.pt` format used by the offline trainer:
+
+    ```
+    python -m preprocessing.gnhk_preprocess --source-root path/to/gnhk_dataset
+    ```
+
+    This creates `data/processed/offline/gnhk/{train,test}` and matching `manifest.json` files.
+
+    Offline training is pretrain-first by default. The GNHK stage is optional in the offline trainer and can be enabled explicitly when needed.
+
+    For stage 1 preprocessing, keep using `python scripts/run_offline_pipeline.py` or the existing offline data-prep workflow for OpenHand-Synth.
 
 4. **Training (Online & Offline)**
     - Online pipeline modules live in `models/online/`.

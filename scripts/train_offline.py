@@ -2,7 +2,7 @@
 
 Two-stage domain adaptation:
 - Stage 1: pretrain on synthetic OpenHand-Synth
-- Stage 2: fine-tune on real GNHK
+- Stage 2: fine-tune on the GNHK handwriting dataset when explicitly enabled
 
 The script stores structured metrics, best checkpoints per stage, and
 report-ready evaluation artifacts for the final fine-tuned model.
@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.offline import CRNN, build_text_encoder_for_dataset_paths, create_offline_dataloader
+from models.offline import resolve_processed_dataset_root
 
 
 RESULTS_ROOT = Path("experiments/results/offline")
@@ -37,7 +38,7 @@ ERROR_LOG_PATH = RESULTS_ROOT / "error_analysis.txt"
 LATEX_TABLE_PATH = RESULTS_ROOT / "report_summary.tex"
 
 DEFAULT_STAGE1_DATASET_PATH = Path("data/processed/offline/openhand_synth")
-DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/iam_handwriting_finevision")
+DEFAULT_STAGE2_DATASET_PATH = Path("data/processed/offline/gnhk")
 DEFAULT_STAGE2_VALIDATION_FRACTION = 0.1
 
 
@@ -213,7 +214,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stage2-dataset-path",
         default=str(DEFAULT_STAGE2_DATASET_PATH),
-        help="Processed IAM FineVision root containing train/val or train/test splits.",
+        help="Processed GNHK root containing train/test splits (validation can be carved from train).",
     )
     parser.add_argument("--stage2-train-split", default="train", help="Training split for stage 2.")
     parser.add_argument("--stage2-val-split", default="auto", help="Validation split for stage 2. Use 'auto' to carve out a held-out subset from train.")
@@ -226,11 +227,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size.")
     parser.add_argument("--epochs-stage1", type=int, default=25, help="Pretraining epochs.")
     parser.add_argument("--epochs-stage2", type=int, default=60, help="Fine-tuning epochs.")
+    parser.add_argument("--run-finetune", action="store_true", help="Run the stage 2 fine-tuning phase after pretraining.")
+    parser.add_argument("--skip-stage1", action="store_true", help="Skip stage 1 training and load an existing pretrained checkpoint.")
+    parser.add_argument("--pretrained-checkpoint", default=str(CHECKPOINT_ROOT / "pretrained.pth"), help="Path to an existing pretrained checkpoint used when --skip-stage1 is enabled.")
+    parser.add_argument("--dataset-name", default=None, help="Compatibility alias for the stage 2 dataset name or processed root.")
     parser.add_argument("--lr-stage1", type=float, default=1e-3, help="Learning rate for stage 1.")
-    parser.add_argument("--lr-stage2", type=float, default=2e-5, help="Learning rate for stage 2.")
-    parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=2, help="Freeze the CNN backbone for this many fine-tuning epochs.")
-    parser.add_argument("--stage2-backbone-lr-scale", type=float, default=0.1, help="LR multiplier for the CNN backbone during stage 2.")
-    parser.add_argument("--stage2-head-lr-scale", type=float, default=1.5, help="LR multiplier for the classifier head during stage 2.")
+    parser.add_argument("--lr-stage2", type=float, default=1e-4, help="Learning rate for stage 2.")
+    parser.add_argument("--stage2-head-only-epochs", type=int, default=3, help="Train only the classifier head for this many initial fine-tuning epochs.")
+    parser.add_argument("--stage2-freeze-cnn-epochs", type=int, default=6, help="Freeze the CNN backbone for this many fine-tuning epochs.")
+    parser.add_argument("--stage2-backbone-lr-scale", type=float, default=0.05, help="LR multiplier for the CNN backbone during stage 2.")
+    parser.add_argument("--stage2-head-lr-scale", type=float, default=5.0, help="LR multiplier for the classifier head during stage 2.")
     parser.add_argument("--hidden-size", type=int, default=256, help="CRNN hidden size.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, cuda.")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers.")
@@ -339,6 +345,27 @@ def set_module_trainable(module: nn.Module, trainable: bool) -> None:
         parameter.requires_grad_(trainable)
 
 
+def configure_finetune_trainability(model: nn.Module, epoch: int, head_only_epochs: int, freeze_cnn_epochs: int) -> None:
+    if epoch <= head_only_epochs:
+        set_module_trainable(model.cnn, False)
+        set_module_trainable(model.sequence_projection, False)
+        set_module_trainable(model.rnn, False)
+        set_module_trainable(model.classifier, True)
+        return
+
+    if epoch <= freeze_cnn_epochs:
+        set_module_trainable(model.cnn, False)
+        set_module_trainable(model.sequence_projection, True)
+        set_module_trainable(model.rnn, True)
+        set_module_trainable(model.classifier, True)
+        return
+
+    set_module_trainable(model.cnn, True)
+    set_module_trainable(model.sequence_projection, True)
+    set_module_trainable(model.rnn, True)
+    set_module_trainable(model.classifier, True)
+
+
 def checkpoint_is_compatible(model: nn.Module, checkpoint_state_dict: dict[str, torch.Tensor]) -> bool:
     model_state_dict = model.state_dict()
     if set(model_state_dict.keys()) != set(checkpoint_state_dict.keys()):
@@ -440,9 +467,68 @@ def run_epoch(
     }
 
 
+@torch.no_grad()
+def preview_validation_examples(
+    model: nn.Module,
+    dataloader,
+    encoder,
+    device: torch.device,
+    max_examples: int = 2,
+    beam_width: int = 5,
+) -> list[dict[str, str | float]]:
+    model.eval()
+    for batch in dataloader:
+        images = batch["images"].to(device)
+        references = batch["texts"]
+
+        logits = model(images)
+        greedy_predictions = greedy_decode(logits.detach().cpu(), encoder)
+        beam_predictions = model.decode_beam_search(
+            logits.detach(),
+            alphabet=encoder.vocab,
+            beam_width=beam_width,
+            blank_index=encoder.blank_index,
+        )
+
+        previews: list[dict[str, str | float]] = []
+        for index, reference in enumerate(references[:max_examples]):
+            greedy_prediction = greedy_predictions[index] if index < len(greedy_predictions) else ""
+            beam_prediction, beam_confidence = beam_predictions[index] if index < len(beam_predictions) else ("", 0.0)
+            previews.append(
+                {
+                    "reference": reference,
+                    "greedy": greedy_prediction,
+                    "beam": beam_prediction,
+                    "beam_confidence": float(beam_confidence),
+                }
+            )
+        return previews
+
+    return []
+
+
+def print_validation_preview(stage_name: str, previews: list[dict[str, str | float]]) -> None:
+    if not previews:
+        print(f"[{stage_name}] preview: no validation samples available.", flush=True)
+        return
+
+    for index, preview in enumerate(previews, start=1):
+        reference = preview["reference"]
+        greedy = preview["greedy"]
+        beam = preview["beam"]
+        beam_confidence = preview["beam_confidence"]
+        print(
+            f"[{stage_name}] preview {index}: ref={reference!r} | greedy={greedy!r} | beam={beam!r} (conf={beam_confidence:.3f})",
+            flush=True,
+        )
+
+
 def build_loaders(args: argparse.Namespace, encoder):
+    stage1_root = Path(args.stage1_dataset_path)
+    stage2_root = resolve_processed_dataset_root(args.data_root, args.dataset_name) if args.dataset_name else Path(args.stage2_dataset_path)
+
     stage1_train = create_offline_dataloader(
-        dataset_path=args.stage1_dataset_path,
+        dataset_path=stage1_root,
         split=args.stage1_train_split,
         text_encoder=encoder,
         batch_size=args.batch_size,
@@ -452,7 +538,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         augment=True,
     )
     stage1_val = create_offline_dataloader(
-        dataset_path=args.stage1_dataset_path,
+        dataset_path=stage1_root,
         split=args.stage1_val_split,
         text_encoder=encoder,
         batch_size=args.batch_size,
@@ -461,7 +547,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         max_samples=args.stage1_val_max_samples,
     )
     if args.stage2_val_split == "auto":
-        stage2_sample_paths = sorted((Path(args.stage2_dataset_path) / "train").glob("sample_*.pt"))
+        stage2_sample_paths = sorted((stage2_root / "train").glob("sample_*.pt"))
         if args.stage2_max_samples is not None:
             stage2_sample_paths = stage2_sample_paths[:args.stage2_max_samples]
         stage2_train_paths, stage2_val_paths = split_sample_paths(
@@ -470,7 +556,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             seed=args.seed,
         )
         stage2_train = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -480,7 +566,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             augment=True,
         )
         stage2_val = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split="val",
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -490,7 +576,7 @@ def build_loaders(args: argparse.Namespace, encoder):
         )
     else:
         stage2_train = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_train_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -500,7 +586,7 @@ def build_loaders(args: argparse.Namespace, encoder):
             augment=True,
         )
         stage2_val = create_offline_dataloader(
-            dataset_path=args.stage2_dataset_path,
+            dataset_path=stage2_root,
             split=args.stage2_val_split,
             text_encoder=encoder,
             batch_size=args.batch_size,
@@ -521,17 +607,22 @@ def fit_stage(
     epochs: int,
     lr: float,
     checkpoint_path: Path,
+    head_only_epochs: int = 0,
     freeze_cnn_epochs: int = 0,
     backbone_lr_scale: float = 0.1,
     head_lr_scale: float = 1.5,
+    resume_from_checkpoint: bool = True,
 ) -> dict:
     criterion = nn.CTCLoss(blank=encoder.blank_index, zero_infinity=True)
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if use_amp else None
     if stage_name == "finetune" and freeze_cnn_epochs > 0:
-        set_module_trainable(model.cnn, False)
+        configure_finetune_trainability(model, 1, head_only_epochs, freeze_cnn_epochs)
     else:
         set_module_trainable(model.cnn, True)
+        set_module_trainable(model.sequence_projection, True)
+        set_module_trainable(model.rnn, True)
+        set_module_trainable(model.classifier, True)
 
     optimizer = build_optimizer(model, lr, stage_name, backbone_lr_scale, head_lr_scale)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -546,7 +637,7 @@ def fit_stage(
     best_epoch = 0
     start_epoch = 1
 
-    if checkpoint_path.exists():
+    if resume_from_checkpoint and checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path, map_location=device)
         saved_model_state = checkpoint.get("model_state_dict", {})
         if saved_model_state and checkpoint_is_compatible(model, saved_model_state):
@@ -572,9 +663,12 @@ def fit_stage(
     }
 
     for epoch in range(start_epoch, epochs + 1):
-        if stage_name == "finetune" and freeze_cnn_epochs > 0 and epoch == freeze_cnn_epochs + 1:
-            set_module_trainable(model.cnn, True)
-            print(f"[{stage_name}] unfreezing CNN backbone for adaptive fine-tuning.", flush=True)
+        if stage_name == "finetune":
+            configure_finetune_trainability(model, epoch, head_only_epochs, freeze_cnn_epochs)
+            if epoch == head_only_epochs + 1 and head_only_epochs > 0:
+                print(f"[{stage_name}] unfreezing encoder blocks after head warmup.", flush=True)
+            elif epoch == freeze_cnn_epochs + 1 and freeze_cnn_epochs >= head_only_epochs:
+                print(f"[{stage_name}] unfreezing CNN backbone for adaptive fine-tuning.", flush=True)
 
         train_metrics = run_epoch(model, train_loader, criterion, optimizer, encoder, device, use_amp, scaler)
         val_metrics = run_epoch(model, val_loader, criterion, None, encoder, device, False, None)
@@ -593,6 +687,10 @@ def fit_stage(
             f"train loss {train_metrics['loss']:.4f} cer {train_metrics['cer']:.4f} wer {train_metrics['wer']:.4f} | "
             f"val loss {val_metrics['loss']:.4f} cer {val_metrics['cer']:.4f} wer {val_metrics['wer']:.4f}"
         )
+
+        if stage_name == "finetune" and (epoch == start_epoch or epoch % 5 == 0 or epoch == epochs):
+            previews = preview_validation_examples(model, val_loader, encoder, device, max_examples=2, beam_width=5)
+            print_validation_preview(stage_name, previews)
 
         if val_metrics["cer"] <= best_val_cer:
             best_val_cer = float(val_metrics["cer"])
@@ -613,7 +711,7 @@ def fit_stage(
                 checkpoint_path,
             )
 
-            scheduler.step(val_metrics["cer"])
+        scheduler.step(val_metrics["cer"])
 
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -635,12 +733,14 @@ def stage_config_summary(args: argparse.Namespace) -> dict:
             "epochs": args.epochs_stage1,
             "learning_rate": args.lr_stage1,
         },
+        "run_finetune": args.run_finetune,
         "stage2": {
             "dataset_path": str(args.stage2_dataset_path),
             "train_split": args.stage2_train_split,
             "val_split": args.stage2_val_split,
             "epochs": args.epochs_stage2,
             "learning_rate": args.lr_stage2,
+            "head_only_epochs": args.stage2_head_only_epochs,
             "freeze_cnn_epochs": args.stage2_freeze_cnn_epochs,
             "backbone_lr_scale": args.stage2_backbone_lr_scale,
             "head_lr_scale": args.stage2_head_lr_scale,
@@ -666,6 +766,7 @@ def build_final_report(
     encoder,
     device: torch.device,
     checkpoint_path: Path,
+    stage_label: str,
     max_error_examples: int = 20,
 ) -> dict:
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -707,7 +808,7 @@ def build_final_report(
             r"\begin{tabular}{lccc}",
                 "Stage & Best epoch & CER & WER " + r"\\",
             r"\hline",
-                f"Final fine-tuned & {checkpoint.get('best_epoch', '?')} & {eval_metrics['cer']:.4f} & {eval_metrics['wer']:.4f} " + r"\\",
+                f"{stage_label} & {checkpoint.get('best_epoch', '?')} & {eval_metrics['cer']:.4f} & {eval_metrics['wer']:.4f} " + r"\\",
             r"\end{tabular}",
             r"\caption{Offline CRNN evaluation summary.}",
             r"\end{table}",
@@ -736,6 +837,23 @@ def build_final_report(
         "top_substitutions": top_substitutions,
         "error_examples": error_examples,
     }
+
+
+def load_checkpoint_into_model(model: nn.Module, checkpoint_path: Path, device: torch.device) -> dict:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint_state_dict = checkpoint["model_state_dict"]
+    model_state_dict = model.state_dict()
+    compatible_state_dict = {
+        key: value
+        for key, value in checkpoint_state_dict.items()
+        if key in model_state_dict and model_state_dict[key].shape == value.shape
+    }
+    skipped_keys = sorted(set(checkpoint_state_dict) - set(compatible_state_dict))
+    model_state_dict.update(compatible_state_dict)
+    model.load_state_dict(model_state_dict)
+    if skipped_keys:
+        print(f"Loaded checkpoint with {len(compatible_state_dict)} compatible tensors; skipped {len(skipped_keys)} incompatible tensors.")
+    return checkpoint
 
 
 def main() -> None:
@@ -805,40 +923,70 @@ def main() -> None:
     if args.stage2_val_split == "auto":
         print(f"Stage 2 validation: {args.stage2_validation_fraction:.0%} holdout from train")
 
-    stage1_result = fit_stage(
-        stage_name="pretrain",
-        model=model,
-        train_loader=stage1_train,
-        val_loader=stage1_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage1,
-        lr=args.lr_stage1,
-        checkpoint_path=CHECKPOINT_ROOT / "pretrained.pth",
-    )
+    pretrained_checkpoint_path = Path(args.pretrained_checkpoint)
+    if args.skip_stage1:
+        if not pretrained_checkpoint_path.exists():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {pretrained_checkpoint_path}")
+        load_checkpoint_into_model(model, pretrained_checkpoint_path, device)
+        stage1_result = {
+            "best_val_cer": float("nan"),
+            "best_epoch": 0,
+            "checkpoint": str(pretrained_checkpoint_path),
+            "history": [],
+            "skipped": True,
+        }
+        print(f"Loaded pretrained checkpoint from {pretrained_checkpoint_path}")
+    else:
+        stage1_result = fit_stage(
+            stage_name="pretrain",
+            model=model,
+            train_loader=stage1_train,
+            val_loader=stage1_val,
+            encoder=encoder,
+            device=device,
+            epochs=args.epochs_stage1,
+            lr=args.lr_stage1,
+            checkpoint_path=pretrained_checkpoint_path,
+        )
 
-    stage2_result = fit_stage(
-        stage_name="finetune",
-        model=model,
-        train_loader=stage2_train,
-        val_loader=stage2_val,
-        encoder=encoder,
-        device=device,
-        epochs=args.epochs_stage2,
-        lr=args.lr_stage2,
-        checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
-        freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
-        backbone_lr_scale=args.stage2_backbone_lr_scale,
-        head_lr_scale=args.stage2_head_lr_scale,
-    )
+    if args.run_finetune:
+        stage2_result = fit_stage(
+            stage_name="finetune",
+            model=model,
+            train_loader=stage2_train,
+            val_loader=stage2_val,
+            encoder=encoder,
+            device=device,
+            epochs=args.epochs_stage2,
+            lr=args.lr_stage2,
+            checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+            head_only_epochs=args.stage2_head_only_epochs,
+            freeze_cnn_epochs=args.stage2_freeze_cnn_epochs,
+            backbone_lr_scale=args.stage2_backbone_lr_scale,
+            head_lr_scale=args.stage2_head_lr_scale,
+            resume_from_checkpoint=False,
+        )
+        final_stage_label = "Final fine-tuned"
+        final_checkpoint_path = CHECKPOINT_ROOT / "finetuned.pth"
+        final_dataloader = stage2_val
+    else:
+        stage2_result = None
+        final_stage_label = "Stage 1 pretrain"
+        final_checkpoint_path = pretrained_checkpoint_path
+        final_dataloader = stage1_val
 
     report = build_final_report(
         model=model,
-        dataloader=stage2_val,
+        dataloader=final_dataloader,
         encoder=encoder,
         device=device,
-        checkpoint_path=CHECKPOINT_ROOT / "finetuned.pth",
+        checkpoint_path=final_checkpoint_path,
+        stage_label=final_stage_label,
     )
+
+    stage_results = {"pretrain": stage1_result}
+    if stage2_result is not None:
+        stage_results["finetune"] = stage2_result
 
     metrics = {
         "config": stage_config_summary(args),
@@ -847,7 +995,7 @@ def main() -> None:
         "data_analysis": data_analysis,
         "stages": {
             "pretrain": stage1_result,
-            "finetune": stage2_result,
+            **({"finetune": stage2_result} if stage2_result is not None else {}),
         },
         "final_report": {
             "metrics": report["metrics"],
@@ -861,7 +1009,7 @@ def main() -> None:
         file.write("\n".join([
             "TRAINING SUMMARY",
             "================",
-            format_stage_summary_table({"pretrain": stage1_result, "finetune": stage2_result}),
+            format_stage_summary_table(stage_results),
             "",
             f"Final CER: {report['metrics']['cer']:.4f}",
             f"Final WER: {report['metrics']['wer']:.4f}",
