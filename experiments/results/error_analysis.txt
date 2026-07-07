@@ -1,0 +1,110 @@
+Offline CRNN final evaluation
+Checkpoint: checkpoints/offline/finetuned.pth
+Samples: 100
+Loss: 0.6959
+CER: 0.1439
+WER: 0.4356
+
+Top substitution pairs:
+  'E' -> 'I': 4
+  'I' -> 'A': 3
+  'L' -> 'U': 3
+  'F' -> 'E': 2
+  'H' -> 'A': 2
+  'E' -> 'A': 2
+  'I' -> 'E': 2
+  'I' -> 'L': 2
+  'T' -> 'I': 2
+  'H' -> 'M': 2
+  'N' -> 'M': 2
+  'B' -> 'D': 2
+  'P' -> 'R': 2
+  'M' -> 'L': 2
+  'A' -> 'E': 2
+  'L' -> 'C': 2
+  'C' -> 'S': 1
+  'P' -> 'B': 1
+  'S' -> 'B': 1
+  'E' -> 'U': 1
+
+Representative errors:
+REF: BOULADE
+PRED: BOULADET
+ALIGN: [('match', 'B', 'B'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('match', 'L', 'L'), ('match', 'A', 'A'), ('match', 'D', 'D'), ('match', 'E', 'E'), ('ins', '', 'T')]
+
+REF: FERCHECHE
+PRED: EERSAACAE
+ALIGN: [('sub', 'F', 'E'), ('match', 'E', 'E'), ('match', 'R', 'R'), ('sub', 'C', 'S'), ('sub', 'H', 'A'), ('sub', 'E', 'A'), ('match', 'C', 'C'), ('sub', 'H', 'A'), ('match', 'E', 'E')]
+
+REF: POUGEOLLE
+PRED: BOUGEOLLE
+ALIGN: [('sub', 'P', 'B'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('match', 'G', 'G'), ('match', 'E', 'E'), ('match', 'O', 'O'), ('match', 'L', 'L'), ('match', 'L', 'L'), ('match', 'E', 'E')]
+
+REF: MAILLET
+PRED: MAILLETI
+ALIGN: [('match', 'M', 'M'), ('match', 'A', 'A'), ('match', 'I', 'I'), ('match', 'L', 'L'), ('match', 'L', 'L'), ('match', 'E', 'E'), ('match', 'T', 'T'), ('ins', '', 'I')]
+
+REF: RICK
+PRED: RECK
+ALIGN: [('match', 'R', 'R'), ('sub', 'I', 'E'), ('match', 'C', 'C'), ('match', 'K', 'K')]
+
+REF: JOSSE
+PRED: OSBU
+ALIGN: [('del', 'J', ''), ('match', 'O', 'O'), ('match', 'S', 'S'), ('sub', 'S', 'B'), ('sub', 'E', 'U')]
+
+REF: TITOUAN
+PRED: TLIOUAN
+ALIGN: [('match', 'T', 'T'), ('sub', 'I', 'L'), ('sub', 'T', 'I'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('match', 'A', 'A'), ('match', 'N', 'N')]
+
+REF: DUHOUX
+PRED: AUMOUX
+ALIGN: [('sub', 'D', 'A'), ('match', 'U', 'U'), ('sub', 'H', 'M'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('match', 'X', 'X')]
+
+REF: LOU-ANNE
+PRED: LOU -ANNE
+ALIGN: [('match', 'L', 'L'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('ins', '', ' '), ('match', '-', '-'), ('match', 'A', 'A'), ('match', 'N', 'N'), ('match', 'N', 'N'), ('match', 'E', 'E')]
+
+REF: CARESMEL
+PRED: CHRISD
+ALIGN: [('match', 'C', 'C'), ('sub', 'A', 'H'), ('match', 'R', 'R'), ('sub', 'E', 'I'), ('match', 'S', 'S'), ('del', 'M', ''), ('del', 'E', ''), ('sub', 'L', 'D')]
+
+REF: DUMOULIN
+PRED: DUMOULAN
+ALIGN: [('match', 'D', 'D'), ('match', 'U', 'U'), ('match', 'M', 'M'), ('match', 'O', 'O'), ('match', 'U', 'U'), ('match', 'L', 'L'), ('sub', 'I', 'A'), ('match', 'N', 'N')]
+
+REF: SATDANI
+PRED: SAIDANI
+ALIGN: [('match', 'S', 'S'), ('match', 'A', 'A'), ('sub', 'T', 'I'), ('match', 'D', 'D'), ('match', 'A', 'A'), ('match', 'N', 'N'), ('match', 'I', 'I')]
+
+REF: NAVE
+PRED: MAVE
+ALIGN: [('sub', 'N', 'M'), ('match', 'A', 'A'), ('match', 'V', 'V'), ('match', 'E', 'E')]
+
+REF: BORIES
+PRED: DORIES
+ALIGN: [('sub', 'B', 'D'), ('match', 'O', 'O'), ('match', 'R', 'R'), ('match', 'I', 'I'), ('match', 'E', 'E'), ('match', 'S', 'S')]
+
+REF: POLLET
+PRED: ROLLET
+ALIGN: [('sub', 'P', 'R'), ('match', 'O', 'O'), ('match', 'L', 'L'), ('match', 'L', 'L'), ('match', 'E', 'E'), ('match', 'T', 'T')]
+
+REF: LECONFF
+PRED: LECONIF
+ALIGN: [('match', 'L', 'L'), ('match', 'E', 'E'), ('match', 'C', 'C'), ('match', 'O', 'O'), ('match', 'N', 'N'), ('sub', 'F', 'I'), ('match', 'F', 'F')]
+
+REF: NADIR
+PRED: W
+ALIGN: [('del', 'N', ''), ('del', 'A', ''), ('del', 'D', ''), ('del', 'I', ''), ('sub', 'R', 'W')]
+
+REF: BEENAZIEZ
+PRED: BENALIEZ
+ALIGN: [('match', 'B', 'B'), ('del', 'E', ''), ('match', 'E', 'E'), ('match', 'N', 'N'), ('match', 'A', 'A'), ('sub', 'Z', 'L'), ('match', 'I', 'I'), ('match', 'E', 'E'), ('match', 'Z', 'Z')]
+
+REF: DUSSAIGNE RAPHAEL
+PRED: DUSSAIGNERAPHAIL
+ALIGN: [('match', 'D', 'D'), ('match', 'U', 'U'), ('match', 'S', 'S'), ('match', 'S', 'S'), ('match', 'A', 'A'), ('match', 'I', 'I'), ('match', 'G', 'G'), ('match', 'N', 'N'), ('match', 'E', 'E'), ('del', ' ', ''), ('match', 'R', 'R'), ('match', 'A', 'A'), ('match', 'P', 'P'), ('match', 'H', 'H'), ('match', 'A', 'A'), ('sub', 'E', 'I'), ('match', 'L', 'L')]
+
+REF: GENIQUE-ENNIS
+PRED: GENLOUEENNIS
+ALIGN: [('match', 'G', 'G'), ('match', 'E', 'E'), ('match', 'N', 'N'), ('sub', 'I', 'L'), ('sub', 'Q', 'O'), ('match', 'U', 'U'), ('match', 'E', 'E'), ('del', '-', ''), ('match', 'E', 'E'), ('match', 'N', 'N'), ('match', 'N', 'N'), ('match', 'I', 'I'), ('match', 'S', 'S')]
+
