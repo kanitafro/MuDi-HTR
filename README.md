@@ -1,13 +1,10 @@
-# MuDi-HTR
+# **MuDi-HTR**: Multi-Modal Digital Handwriting Text Recognition
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-active-success)
 
-## Project Title
-**MuDi-HTR: Multi-Modal Digital Handwriting Text Recognition**
 
-## Abstract
 MuDi-HTR is a research-oriented framework for combining online stroke trajectories and offline handwritten image features for robust handwriting text recognition.
 
 ## Repository structure
@@ -58,14 +55,13 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 │       ├── train.py 
 │       └── visualize.py
 │       └── obsolete/  # unused code in the final version
-├── runs/
 ├── preprocessing/
 │   ├── __init__.py
 │   ├── didi_preprocess.py
 │   ├── iam_ondb_preprocess.py
 │   ├── offline_preprocess.py
 │   └── online_preprocess.py
-├── scripts
+├── scripts/
 │   ├── analyze_offline_data.py
 │   ├── evaluate_fusion.py
 │   ├── evaluate_offline.py
@@ -75,7 +71,7 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 │   ├── train_offline.py
 │   ├── train_online.py
 │   └── train.py
-└── tests
+└── tests/
     ├── __init__.py
     ├── find_isgl_files.py
     ├── test_beam.py
@@ -164,8 +160,8 @@ Approximate similarity utilities using MinHash are in `cda_similarity/`.
 Store experiment outputs under `experiments/results/` and visualizations under `experiments/figures/`.
 
 ## License
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
 
 ## Contributors
-- @kanitafro
-- @dzankk
+- [@kanitafro](https://github.com/kanitafro)
+- [@dzankk](https://github.com/dzankk)
