@@ -1,12 +1,13 @@
 import torch
 from pathlib import Path
 import sys
-sys.path.append(str(Path(__file__).parent.parent.parent))
 
+sys.path.append(str(Path(__file__).parent.parent))
+
+from torch.utils.data import DataLoader
 from models.online.model import OnlineHTRModel, CTCDecoder
 from models.online.dataset import OnlineHandwritingDataset, CTCLabelEncoder
 from models.online.train_isgl import load_config, compute_output_lengths
-from torch.utils.data import DataLoader
 
 # Load config and model
 config = load_config(Path(__file__).parent / "config_isgl.yaml")['iam']

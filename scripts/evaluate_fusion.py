@@ -44,7 +44,7 @@ PLOT_PATH = RESULTS_ROOT / "fusion_optimization_curve.png"
 METRICS_JSON_PATH = RESULTS_ROOT / "fusion_metrics.json"
 METRICS_CSV_PATH = RESULTS_ROOT / "fusion_metrics.csv"
 
-DEFAULT_ONLINE_DATA_ROOT = Path("data/processed/online/iam_ondb")
+DEFAULT_ONLINE_DATA_ROOT = Path("data/processed/online/isgl")
 DEFAULT_OFFLINE_DATA_ROOT = Path("data/processed/offline")
 DEFAULT_OFFLINE_DATASET_NAME = "Voxel51/iam_handwriting_finevision"
 
