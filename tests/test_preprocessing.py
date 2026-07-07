@@ -1,11 +1,15 @@
 """Focused tests for preprocessing placeholders."""
 
+import sys
 import tempfile
 import unittest
 import importlib.util
 from pathlib import Path
 
-from preprocessing.online_preprocess import parse_didi
+# Add parent directory to path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from scripts.run_online_pipeline import parse_didi
 
 HAS_NUMPY = importlib.util.find_spec("numpy") is not None
 HAS_PIL = importlib.util.find_spec("PIL") is not None

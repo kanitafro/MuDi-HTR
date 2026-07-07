@@ -19,7 +19,7 @@ from PIL import Image, ImageOps
 
 from models.online.model import OnlineHTRModel, CTCDecoder
 from models.online.dataset import CTCLabelEncoder
-from models.online.train_isgl import load_config, compute_output_lengths
+from scripts.train_online import load_config, compute_output_lengths
 
 try:
     from models.offline import CRNN

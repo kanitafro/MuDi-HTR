@@ -39,13 +39,13 @@ from models.online.dataset import OnlineHandwritingDataset
 from models.online.model import OnlineHTRModel
 
 
-RESULTS_ROOT = Path("experiments/results/offline")
+RESULTS_ROOT = Path("../experiments/results/offline")
 PLOT_PATH = RESULTS_ROOT / "fusion_optimization_curve.png"
 METRICS_JSON_PATH = RESULTS_ROOT / "fusion_metrics.json"
 METRICS_CSV_PATH = RESULTS_ROOT / "fusion_metrics.csv"
 
-DEFAULT_ONLINE_DATA_ROOT = Path("data/processed/online/isgl")
-DEFAULT_OFFLINE_DATA_ROOT = Path("data/processed/offline")
+DEFAULT_ONLINE_DATA_ROOT = Path("../data/processed/online/isgl")
+DEFAULT_OFFLINE_DATA_ROOT = Path("../data/processed/offline")
 DEFAULT_OFFLINE_DATASET_NAME = "GNHK"
 
 SYNTHETIC_WORD_BANK = [
@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for debugging.")
     parser.add_argument("--synthetic-eval", action="store_true", help="Skip real paired evaluation and use synthetic metrics instead.")
     parser.add_argument("--synthetic-samples", type=int, default=1000, help="Number of synthetic samples to generate when synthetic evaluation is used.")
-    parser.add_argument("--synthetic-online-cer", type=float, default=0.185, help="Target online CER for synthetic evaluation.")
+    parser.add_argument("--synthetic-online-cer", type=float, default=0.18, help="Target online CER for synthetic evaluation.")
     parser.add_argument("--synthetic-offline-cer", type=float, default=0.77, help="Target offline CER for synthetic evaluation.")
     parser.add_argument("--strict-pairs", action="store_true", default=True, help="Require paired samples to share the same reference text.")
     parser.add_argument("--allow-unpaired", action="store_true", help="Allow mismatched references and evaluate by index anyway. Use only for debugging.")

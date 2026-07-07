@@ -223,4 +223,5 @@ __marimo__/
 data/raw/
 data/processed/
 checkpoints/
+runs/
 _inspect_finevision_samples.py

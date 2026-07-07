@@ -16,7 +16,7 @@ import sys
 from tqdm import tqdm
 
 # Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent.parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
 from models.online.model import OnlineHTRModel as ImprovedOnlineHTRModel
 from models.online.dataset import OnlineHandwritingDataset, CTCLabelEncoder
@@ -37,7 +37,7 @@ def load_config(config_path):
 #    return output_lens
 
 def compute_output_lengths(input_lengths, downsample_factor=1):
-    """No downsampling – output length = input length."""
+    """No downsampling - output length = input length."""
     return input_lengths.clone()
 
 
@@ -152,19 +152,17 @@ def compute_wer(pred, true):
 
 
 def main():
-    # Load configuration
-    config_path = Path(__file__).parent / "config_isgl.yaml"
-    #if not config_path.exists():
-    #    config_path = Path(__file__).parent / "config_iam.yaml"
-    config = load_config(config_path)['iam']
-
     # Override data directory for ISGL
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parent.parent
+    repo_root = script_dir.parent
+
+    # Load configuration
+    config_path = repo_root / "models" / "online" / "config_isgl.yaml"
+    config = load_config(config_path)['iam']
 
     # Use ISGL data
     data_dir = repo_root / "data" / "processed" / "online" / "isgl"
-    checkpoint_dir = repo_root / "models" / "online" / "checkpoints_final" / "isgl"
+    checkpoint_dir = repo_root / "models" / "checkpoints" / "isgl"
     log_dir = repo_root / "runs" / "isgl"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -310,7 +308,7 @@ def main():
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
     # Visualizer
-    visualizer = TrainingVisualizer(Path("experiments_final/figures_isgl_final")) ############## HERE ##################
+    visualizer = TrainingVisualizer(Path("../experiments/figures/figures_isgl_final")) ############## CHANGE HERE ##################
     writer = SummaryWriter(log_dir)
 
     best_val_cer = float('inf')
@@ -340,7 +338,7 @@ def main():
 
         if val_cer < best_val_cer:
             best_val_cer = val_cer
-            best_model_path = checkpoint_dir / "best_isgl_final.pth" ############## HERE ##################
+            best_model_path = checkpoint_dir / "best_isgl_final.pth" ############## CHANGE HERE ##################
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),

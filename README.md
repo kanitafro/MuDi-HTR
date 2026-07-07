@@ -17,62 +17,68 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 ├── README.md
 ├── requirements.txt
 ├── setup.py
-├── cda_similarity
+├── cda_similarity/
 │   ├── __init__.py
-│   └── minhash_similarity.py
-├── data
+|   ├── minhash_similarity.py
+│   └── synthetic_data.py
+├── data/
 │   ├── README.md
-│   ├── processed
-│   │   └── online
-│   │       └── didi
-│   │           ├── test.pt
-│   │           ├── train.pt
-│   │           └── valid.pt
-│   └── raw
-│       └── didi_dataset
-│           ├── diagrams_20200131.ndjson
-│           ├── diagrams_wo_text_20200131.ndjson
-│           ├── dot
-│           ├── png
-│           └── xdot
-├── demo
+│   ├── processed/
+│   │   └── online/
+│   │   └── offline/
+│   └── raw/
+│       └── didi_dataset/
+│       └── isgl/
+│       └── iam-ondb/
+├── demo/
 │   ├── __init__.py
 │   └── streamlit_app.py
-├── docs
-├── experiments
+├── docs/
+├── experiments/
 │   ├── figures
 │   ├── notebooks
 │   │   └── eda.ipynb
 │   └── results
-├── models
+├── models/
 │   ├── __init__.py
-│   ├── fusion
+│   ├── fusion/
 │   │   ├── __init__.py
 │   │   └── model.py
-│   ├── offline
+│   ├── offline/
 │   │   ├── __init__.py
 │   │   └── model.py
-│   └── online
+│   └── online/
 │       ├── __init__.py
-│       ├── config_pretrain.yaml
+│       ├── compute_stats.py
+│       ├── config_isgl.yaml
 │       ├── dataset.py
-│       ├── finetune.py
+│       ├── feature_stats.pt
+│       ├── generate_online_beams.py
 │       ├── model.py
-│       ├── pretrain.py
-│       ├── train.py # might be obsolete
-│       ├── utils.py # might be obsolete
-│       └── visualize.py # might be out of date
-├── preprocessing
+│       ├── train.py 
+│       └── visualize.py
+│       └── obsolete/  # unused code in the final version
+├── runs/
+├── preprocessing/
 │   ├── __init__.py
 │   ├── didi_preprocess.py
 │   ├── iam_ondb_preprocess.py
 │   ├── offline_preprocess.py
 │   └── online_preprocess.py
 ├── scripts
+│   ├── analyze_offline_data.py
+│   ├── evaluate_fusion.py
+│   ├── evaluate_offline.py
+│   ├── minhash_scalability.py
 │   ├── run_offline_pipeline.py
+│   ├── run_online_pipeline.py
+│   ├── train_offline.py
+│   ├── train_online.py
 │   └── train.py
 └── tests
     ├── __init__.py
+    ├── find_isgl_files.py
+    ├── test_beam.py
     └── test_preprocessing.py
 ```
 
@@ -96,23 +102,22 @@ pip install -r requirements.txt
     - Keep raw material in `data/raw/` (ignored by git).
     - Implement dataset parsing inside `preprocessing/`.
 
-    3a. ONLINE data prep
+    3a. **ONLINE data prep**
     
-    You can call the script `online_preprocess.py` with parameter `--dataset` (from the root folder):
+    You can call the script `run_online_pipeline.py` with parameter `--dataset` (from the root folder):
     ```
-    python -m preprocessing.online_preprocess --dataset didi
+    python -m scripts.online_preprocess --dataset didi
     ```
     ```
-    python -m preprocessing.online_preprocess --dataset iam_ondb
+    python -m scripts.online_preprocess --dataset iam_ondb
     ```
-
-    Or, if you want to process both datasets in one go:
-
     ```
-    python -m preprocessing.online_preprocess
+    python -m scripts.online_preprocess --dataset isgl
     ```
 
-    3b. OFFLINE data prep
+    Or, if you want to process all 3 datasets in one go, omit the argument or set it to `--dataset all`.
+
+    3b. **OFFLINE data prep**
 
     Stage 1 uses OpenHand-Synth and stays on the existing Hugging Face preprocessing path. Stage 2 uses GNHK and is preprocessed from local JSON/image pairs.
 
@@ -136,16 +141,20 @@ pip install -r requirements.txt
     - Use scripts in `scripts/` to launch experiments.
 
     ```
-    python -m models.online.train
+    python -m scripts.train_online
+    ```
+
+    ```
+    python -m scripts.train_offline
     ```
 
 ## Fusion
 Fusion components combining online/offline signals are in `models/fusion/`.
 
 ## Demo (Streamlit)
-Run the interactive demo from `demo/` with:
-```bash
-streamlit run demo/streamlit_app.py
+Run the interactive demo from isnide `demo/` folder with:
+```
+streamlit run app.py
 ```
 
 ## CDA Similarity (MinHash)
@@ -159,3 +168,4 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ## Contributors
 - @kanitafro
+- @dzankk
