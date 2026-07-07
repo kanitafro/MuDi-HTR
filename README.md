@@ -90,25 +90,26 @@ pip install -r requirements.txt
 2. **Get data**:
     * [DIDI](https://github.com/google-research/google-research/tree/master/didi_dataset) - online branch (pretraining)
     * [IAM-OnDB](https://fki.tic.heia-fr.ch/databases/download-the-iam-on-line-handwriting-database) - online branch (finetuning)
+    * [ISGL](https://data.mendeley.com/datasets/n7kmd7t7yx/1) - online branch (accepted version)
     * [OpenHand-Synth](https://huggingface.co/datasets/to-be/OpenHand-Synth) - offline branch (pretraining)
     * [GNHK](https://www.goodnotes.com/gnhk) - offline branch (finetuning)
 
 3. **Data Preparation**
     - Place source assets under `data/`.
     - Keep raw material in `data/raw/` (ignored by git).
-    - Implement dataset parsing inside `preprocessing/`.
+    - For ISGL dataset, it's necessary to extract all zip folders and make sure the parent folder of this dataset is `data/raw/isgl/` (rename from `data/raw/ICRGL/`)
 
     3a. **ONLINE data prep**
     
     You can call the script `run_online_pipeline.py` with parameter `--dataset` (from the root folder):
     ```
-    python -m scripts.online_preprocess --dataset didi
+    python -m preprocessing.online_preprocess --dataset didi
     ```
     ```
-    python -m scripts.online_preprocess --dataset iam_ondb
+    python -m preprocessing.online_preprocess --dataset iam_ondb
     ```
     ```
-    python -m scripts.online_preprocess --dataset isgl
+    python -m preprocessing.online_preprocess --dataset isgl
     ```
 
     Or, if you want to process all 3 datasets in one go, omit the argument or set it to `--dataset all`.

@@ -9,7 +9,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from scripts.run_online_pipeline import parse_didi
+from preprocessing.online_preprocess import parse_didi
 
 HAS_NUMPY = importlib.util.find_spec("numpy") is not None
 HAS_PIL = importlib.util.find_spec("PIL") is not None
