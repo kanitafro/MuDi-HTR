@@ -207,6 +207,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers.")
     parser.add_argument("--beam-width", type=int, default=10, help="CTC beam width.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, cuda.")
+    parser.add_argument(
+        "--fail-on-vocab-mismatch",
+        action="store_true",
+        help="Exit with error if checkpoint encoder vocab and model classifier size disagree.",
+    )
+    parser.add_argument(
+        "--dump-vocab-mappings",
+        action="store_true",
+        help="If set, attempt to build a dataset-derived encoder and print side-by-side mappings for inspection.",
+    )
+    parser.add_argument(
+        "--line-segment",
+        action="store_true",
+        help="Segment paragraph images into horizontal line bands and run inference per-line, then join predictions for scoring.",
+    )
+    parser.add_argument(
+        "--min-line-height",
+        type=int,
+        default=6,
+        help="Minimum pixel height for a detected line band (rows).",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit number of samples to evaluate (for quick tests).",
+    )
+    parser.add_argument(
+        "--invert",
+        action="store_true",
+        help="Invert image polarity (255 - image) before inference; useful when foreground/background is swapped.",
+    )
+    parser.add_argument(
+        "--preprocess",
+        choices=["none", "clahe", "otsu", "gamma", "histeq"],
+        default="none",
+        help="Optional simple preprocessing to apply to images before inference.",
+    )
     return parser.parse_args()
 
 
@@ -214,6 +252,78 @@ def resolve_device(device_arg: str) -> torch.device:
     if device_arg == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(device_arg)
+
+
+def _apply_clahe_numpy(arr: np.ndarray) -> np.ndarray:
+    # arr expected in [0,1]
+    try:
+        import cv2
+
+        img = (arr * 255).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        out = clahe.apply(img)
+        return out.astype(np.float32) / 255.0
+    except Exception:
+        # fallback to histogram equalization
+        hist, bins = np.histogram(arr.flatten(), 256, [0, 1])
+        cdf = hist.cumsum()
+        cdf = (cdf - cdf.min()) / max(1, (cdf.max() - cdf.min()))
+        out = np.interp(arr.flatten(), bins[:-1], cdf).reshape(arr.shape)
+        return out.astype(np.float32)
+
+
+def _apply_histeq_numpy(arr: np.ndarray) -> np.ndarray:
+    # simple histogram equalization on [0,1] floats
+    hist, bins = np.histogram(arr.flatten(), 256, [0, 1])
+    cdf = hist.cumsum()
+    cdf = (cdf - cdf.min()) / max(1, (cdf.max() - cdf.min()))
+    out = np.interp(arr.flatten(), bins[:-1], cdf).reshape(arr.shape)
+    return out.astype(np.float32)
+
+
+def _apply_otsu_numpy(arr: np.ndarray) -> np.ndarray:
+    try:
+        import cv2
+
+        img = (arr * 255).astype(np.uint8)
+        _, th = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return (th.astype(np.float32) / 255.0)
+    except Exception:
+        # simple mean-based threshold fallback
+        thr = arr.mean()
+        return (arr < thr).astype(np.float32)
+
+
+def preprocess_tensor(img: torch.Tensor, method: str = "none", invert: bool = False) -> torch.Tensor:
+    """Apply simple preprocessing to a single image tensor of shape (1,H,W).
+    Tensor values expected to be float, roughly in [0,1]. Returns same shape and dtype float32.
+    """
+    if img.ndim != 3 or img.shape[0] != 1:
+        return img
+
+    arr = img.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    # clamp/assume 0..1
+    arr = np.clip(arr, 0.0, 1.0)
+
+    if invert:
+        arr = 1.0 - arr
+
+    if method == "none":
+        out = arr
+    elif method == "clahe":
+        out = _apply_clahe_numpy(arr)
+    elif method == "otsu":
+        out = _apply_otsu_numpy(arr)
+    elif method == "gamma":
+        gamma = 0.8
+        out = np.power(arr, gamma)
+    elif method == "histeq":
+        out = _apply_histeq_numpy(arr)
+    else:
+        out = arr
+
+    out_t = torch.from_numpy(out.astype(np.float32)).unsqueeze(0)
+    return out_t
 
 
 def edit_distance(source: Iterable[str], target: Iterable[str]) -> int:
@@ -305,6 +415,10 @@ def evaluate_model(
     alphabet: list[str],
     beam_width: int,
     device: torch.device,
+    line_segment: bool = False,
+    min_line_height: int = 6,
+    preprocess: str = "none",
+    invert: bool = False,
 ) -> tuple[float, float, list[str], list[str]]:
     predictions: list[str] = []
     references: list[str] = []
@@ -312,13 +426,91 @@ def evaluate_model(
     total_batches = len(dataloader)
     print(f"Evaluating {total_batches} batches with beam width {beam_width}...", flush=True)
 
+    import torch.nn.functional as F
+    import numpy as np
+
     for batch_index, batch in enumerate(dataloader, start=1):
-        images = batch["images"].to(device)
+        images = batch["images"]
+        # apply preprocessing on CPU per-sample
+        B = images.shape[0]
+        processed_images: list[torch.Tensor] = []
+        for b in range(B):
+            img = images[b]
+            img_proc = preprocess_tensor(img, method=preprocess, invert=invert)
+            processed_images.append(img_proc)
+        images_cpu = torch.stack(processed_images, dim=0)
+        images_dev = images_cpu.to(device)
         texts = batch["texts"]
 
-        logits = model(images)
-        decoded = model.decode_beam_search(logits, alphabet=alphabet, beam_width=beam_width)
-        batch_predictions = [text for text, _confidence in decoded]
+        batch_predictions: list[str] = []
+
+        # Process samples individually to auto-detect large paragraph images
+        for b in range(B):
+            img_cpu = images_cpu[b]
+            H, W = img_cpu.shape[1], img_cpu.shape[2]
+            do_segment = line_segment or (H > 256 or W > 1024)
+
+            if not do_segment:
+                inp = images_dev[b : b + 1]
+                with torch.inference_mode():
+                    logits = model(inp)
+                decoded = model.decode_beam_search(logits, alphabet=alphabet, beam_width=beam_width)
+                batch_predictions.append(decoded[0][0])
+            else:
+                # Per-sample line segmentation + per-line decoding
+                img = img_cpu.detach()
+                if img.ndim != 3 or img.shape[0] != 1:
+                    raise ValueError(f"Expected image tensor (1,H,W), got {tuple(img.shape)}")
+                arr = img.squeeze(0).numpy()
+                # horizontal projection
+                row_mean = arr.mean(axis=1)
+                thr = float(np.clip(row_mean.mean() - 0.25 * row_mean.std(), 0.0, 1.0))
+                mask = row_mean < thr
+                # group contiguous True runs
+                bands: list[tuple[int, int]] = []
+                i = 0
+                Hm = mask.shape[0]
+                while i < Hm:
+                    if not mask[i]:
+                        i += 1
+                        continue
+                    j = i
+                    while j < Hm and mask[j]:
+                        j += 1
+                    a = max(0, i - 2)
+                    b_end = min(Hm, j + 2)
+                    if (b_end - a) >= min_line_height:
+                        bands.append((a, b_end))
+                    i = j + 1
+                if not bands:
+                    bands = [(0, Hm)]
+
+                per_line_preds: list[str] = []
+                for (a, b_end) in bands:
+                    crop = img[:, a:b_end, :].unsqueeze(0)
+                    # Preserve aspect: scale line height -> 128, width scaled proportionally
+                    _, h, w = crop.shape
+                    target_h = 128
+                    scaled_w = max(1, int(round(float(w) * (target_h / float(h)))))
+                    try:
+                        if scaled_w <= 512:
+                            crop_resized = F.interpolate(crop, size=(target_h, scaled_w), mode="bilinear", align_corners=False)
+                            pad_total = 512 - scaled_w
+                            pad_left = pad_total // 2
+                            pad_right = pad_total - pad_left
+                            crop_resized = F.pad(crop_resized, (pad_left, pad_right, 0, 0), value=1.0)
+                        else:
+                            crop_resized = F.interpolate(crop, size=(target_h, 512), mode="bilinear", align_corners=False)
+                    except Exception:
+                        crop_resized = F.interpolate(crop, size=(128, 512), mode="bilinear", align_corners=False)
+                    crop_resized = crop_resized.to(device)
+                    with torch.inference_mode():
+                        logits = model(crop_resized)
+                    decoded = model.decode_beam_search(logits, alphabet=alphabet, beam_width=beam_width)
+                    per_line_preds.append(decoded[0][0])
+
+                joined = " ".join([p for p in per_line_preds if p])
+                batch_predictions.append(joined)
 
         predictions.extend(batch_predictions)
         references.extend(texts)
@@ -347,6 +539,39 @@ def main() -> None:
     print(f"Loading checkpoint: {checkpoint_path}", flush=True)
     model, encoder = load_checkpoint(checkpoint_path, device)
 
+    # Diagnostic: verify classifier size matches encoder vocab length
+    try:
+        classifier_size = int(model.classifier.weight.shape[0])
+    except Exception:
+        classifier_size = None
+
+    print(f"Loaded checkpoint encoder vocab size: {len(encoder.vocab)}", flush=True)
+    print(f"Loaded model classifier size: {classifier_size}", flush=True)
+
+    if classifier_size is not None and classifier_size != len(encoder.vocab):
+        print("WARNING: classifier size does not match encoder vocab size.", flush=True)
+        print(f"  encoder_vocab_len={len(encoder.vocab)} classifier_size={classifier_size}", flush=True)
+        if args.dump_vocab_mappings:
+            # Attempt to build a dataset-derived encoder for comparison
+            try:
+                from models.offline import build_text_encoder_for_dataset_splits
+
+                print("Attempting to build dataset-derived encoder for mapping...")
+                dataset_encoder = build_text_encoder_for_dataset_splits(
+                    args.data_root, [(args.dataset_name, args.split)], max_samples_per_split=200
+                )
+                print(f"Dataset-derived encoder vocab size: {len(dataset_encoder.vocab)}")
+                print("Index | checkpoint_token | dataset_token")
+                for i in range(min(60, max(len(encoder.vocab), len(dataset_encoder.vocab)))):
+                    a = encoder.vocab[i] if i < len(encoder.vocab) else "<MISSING>"
+                    b = dataset_encoder.vocab[i] if i < len(dataset_encoder.vocab) else "<MISSING>"
+                    print(f"{i:3d} | {a!r:20} | {b!r}")
+            except Exception as e:
+                print(f"Failed to build dataset encoder for mapping: {e}", flush=True)
+
+        if args.fail_on_vocab_mismatch:
+            raise SystemExit("Failing due to vocab/classifier size mismatch as requested by --fail-on-vocab-mismatch")
+
     print("Building evaluation dataloader...", flush=True)
     dataloader = create_offline_dataloader(
         dataset_path=data_root,
@@ -357,6 +582,7 @@ def main() -> None:
         shuffle=False,
         num_workers=args.num_workers,
         augment=False,
+        max_samples=args.max_samples,
     )
     print(f"Loaded {len(dataloader.dataset)} samples.", flush=True)
 
@@ -366,6 +592,10 @@ def main() -> None:
         alphabet=encoder.vocab,
         beam_width=args.beam_width,
         device=device,
+        line_segment=args.line_segment,
+        min_line_height=args.min_line_height,
+        preprocess=args.preprocess,
+        invert=args.invert,
     )
 
     print("Offline Beam Search Evaluation")

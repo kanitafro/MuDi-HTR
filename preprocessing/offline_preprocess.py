@@ -108,6 +108,72 @@ def _otsu_binarize(image: np.ndarray) -> np.ndarray:
     return np.where(image > threshold, 255, 0).astype(np.uint8)
 
 
+def _distortion_free_resize(image: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+    """Resize while preserving aspect ratio and pad to the target canvas."""
+    target_h, target_w = image_size
+    source_h, source_w = image.shape[:2]
+    if source_h <= 0 or source_w <= 0:
+        raise ValueError(f"Invalid image shape for resizing: {image.shape}")
+
+    scale = min(target_w / source_w, target_h / source_h)
+    resized_w = max(1, int(round(source_w * scale)))
+    resized_h = max(1, int(round(source_h * scale)))
+
+    if cv2 is not None:
+        resized = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+    else:
+        resized = np.array(Image.fromarray(image).resize((resized_w, resized_h), Image.Resampling.BILINEAR))
+
+    canvas = np.full((target_h, target_w), 255, dtype=resized.dtype)
+    top = max(0, (target_h - resized_h) // 2)
+    left = max(0, (target_w - resized_w) // 2)
+    canvas[top:top + resized_h, left:left + resized_w] = resized
+    return canvas
+
+
+def preprocess_image_from_array(
+    image: np.ndarray,
+    image_size: tuple[int, int] = (128, 512),
+    augment: bool = False,
+    binarize: bool = True,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Preprocess an in-memory grayscale image using the offline training pipeline."""
+    if image.ndim != 2:
+        raise ValueError(f"Expected a grayscale image array, got shape {image.shape}")
+
+    working = image.astype(np.uint8, copy=False)
+
+    if augment:
+        local_rng = rng if rng is not None else np.random.default_rng()
+        working = _augment_grayscale(working, local_rng)
+
+    working = _distortion_free_resize(working, image_size=image_size)
+
+    if binarize:
+        working = _otsu_binarize(working)
+
+    return working.astype(np.float32) / 255.0
+
+
+def preprocess_image_from_pil(
+    image: Image.Image,
+    image_size: tuple[int, int] = (128, 512),
+    augment: bool = False,
+    binarize: bool = True,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Preprocess a PIL image using the offline training pipeline."""
+    grayscale = image.convert("L")
+    return preprocess_image_from_array(
+        np.array(grayscale, dtype=np.uint8),
+        image_size=image_size,
+        augment=augment,
+        binarize=binarize,
+        rng=rng,
+    )
+
+
 def preprocess_image(
     path: str | Path,
     image_size: tuple[int, int] = (128, 512),
@@ -115,25 +181,26 @@ def preprocess_image(
     binarize: bool = True,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Load, grayscale, resize, optionally augment, and normalize a handwriting image."""
+    """Load and preprocess a handwriting image with distortion-free resizing."""
     source = str(path)
-    width, height = image_size[1], image_size[0]
-
     if cv2 is not None:
         image = cv2.imread(source, cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise ValueError(f"Unable to load image: {path}")
-        resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-    else:
-        image = Image.open(source).convert("L")
-        resized = np.array(image.resize((width, height)))
+        return preprocess_image_from_array(
+            image,
+            image_size=image_size,
+            augment=augment,
+            binarize=binarize,
+            rng=rng,
+        )
 
-    if augment:
-        local_rng = rng if rng is not None else np.random.default_rng()
-        resized = _augment_grayscale(resized, local_rng)
-
-    if binarize:
-        resized = _otsu_binarize(resized)
-
-    return resized.astype(np.float32) / 255.0
+    image = Image.open(source)
+    return preprocess_image_from_pil(
+        image,
+        image_size=image_size,
+        augment=augment,
+        binarize=binarize,
+        rng=rng,
+    )
 
