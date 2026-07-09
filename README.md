@@ -65,9 +65,14 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 ├── preprocessing/
 │   ├── __init__.py
 │   ├── didi_preprocess.py
+│   ├── gnhk_preprocess.py
 │   ├── iam_ondb_preprocess.py
+│   ├── inference_preprocess.py
+│   ├── isgl_preprocess.py
+│   ├── kaggle_handwriting_preprocess.py
 │   ├── offline_preprocess.py
-│   └── online_preprocess.py
+│   ├── online_preprocess.py
+│   └── utils.py
 ├── scripts/
 │   ├── analyze_offline_data.py
 │   ├── evaluate_fusion.py
