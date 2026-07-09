@@ -1,3 +1,4 @@
+# demo/streamlit_app.py
 import sys
 from pathlib import Path
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from scripts.train_online import load_config, compute_output_lengths
 from inference.fusion import perform_beam_fusion
 from preprocessing.inference_preprocess import try_preprocess_variants, select_best_candidate
 from preprocessing.offline_preprocess import preprocess_image_from_pil
+from cda_similarity.minhash_similarity import TextSimilarityIndex
 
 try:
     from models.offline import CRNN
@@ -575,6 +577,13 @@ def canvas_to_offline_input(image_data: np.ndarray, target_h: int = 128, target_
 st.set_page_config(page_title="Online + Offline Handwriting Recognition", layout="wide")
 st.title("Online + Offline Handwriting Recognition")
 st.caption("MuDi-HTR: multi-branch handwriting recognition demo")
+uploaded_files = []
+
+# Store full transcriptions per uploaded file
+if 'doc_texts' not in st.session_state:
+    st.session_state.doc_texts = {}
+if 'doc_names' not in st.session_state:
+    st.session_state.doc_names = []
 
 # Diagnostics expander in the sidebar (collapsed by default)
 # (already defined earlier to allow load-time diagnostics)
@@ -601,12 +610,17 @@ with st.sidebar:
     uploaded_file = None
     with st.expander("Upload & Run", expanded=(mode == "Upload")):
         if mode == "Upload":
-            uploaded_file = st.file_uploader("Upload handwritten image", type=["png","jpg","jpeg","tif","tiff"], key='upload')
-            # allow clearing the upload to return to canvas easily
-            if st.session_state.get('upload') is not None:
-                if st.button("Clear upload"):
-                    st.session_state['upload'] = None
-                    uploaded_file = None
+            uploaded_files = st.file_uploader(
+                "Upload handwritten images (max 20)",
+                type=["png","jpg","jpeg","tif","tiff"],
+                accept_multiple_files=True,
+                key='upload'
+            )
+            # Clear button
+            if st.session_state.get('upload'):
+                if st.button("Clear all uploads"):
+                    st.session_state['upload'] = []
+                    uploaded_files = []
         else:
             st.caption("Switch to Upload mode to load an image.")
 
@@ -634,10 +648,15 @@ def is_blank_crop(pil_crop: Image.Image, image_size=(128,512), blank_thresh: flo
     except Exception:
         return False
 
-if uploaded_file is not None:
-    st.image(uploaded_file, width=300)
-    # Place the run button in the main UI so it's visible when an upload exists
-    run_button = st.button("Recognize Upload")
+if uploaded_files:
+    # Limit to 20
+    if len(uploaded_files) > 20:
+        st.warning("More than 20 files uploaded. Only the first 20 will be processed.")
+        uploaded_files = uploaded_files[:20]
+
+    for idx, file in enumerate(uploaded_files):
+        st.image(file, width=200, caption=f"File {idx+1}")
+    run_button = st.button("Recognize All Uploads")
 else:
     run_button = False
 
@@ -656,163 +675,257 @@ CANVAS_UI_SCALE = 2
 
 # Canvas and inference (only show canvas when not in upload mode)
 if uploaded_file is None:
-    st.subheader("Write something below.")
-    canvas_width = OFFLINE_TARGET_W * CANVAS_UI_SCALE
-    canvas_height = OFFLINE_TARGET_H * CANVAS_UI_SCALE
-    canvas_result = st_canvas(
-        fill_color="rgba(255,255,255,0)",
-        stroke_width=3,
-        stroke_color="#000000",
-        background_color="#ffffff",
-        height=canvas_height,
-        width=canvas_width,
-        drawing_mode="freedraw",
-        key="canvas",
-    )
+    if mode == "Canvas":
+        st.subheader("Write something below.")
+        canvas_width = OFFLINE_TARGET_W * CANVAS_UI_SCALE
+        canvas_height = OFFLINE_TARGET_H * CANVAS_UI_SCALE
+        canvas_result = st_canvas(
+            fill_color="rgba(255,255,255,0)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#ffffff",
+            height=canvas_height,
+            width=canvas_width,
+            drawing_mode="freedraw",
+            key="canvas",
+        )
 
-    if canvas_result is not None and canvas_result.json_data is not None:
-        strokes = canvas_result.json_data["objects"]
-        stroke_list = []
-        for obj in strokes:
-            if obj.get("type") == "path":
-                path = obj.get("path", [])
-                if isinstance(path, list) and len(path) > 0:
-                    stroke_list.append({"path": path})
-        if stroke_list:
-            # Show preprocessed canvas preview in Diagnostics
-            try:
-                pil_preview = Image.fromarray(canvas_result.image_data).convert('L')
-                proc_preview = preprocess_image_from_pil(pil_preview, image_size=(128,512), augment=False, binarize=True)
-                diag.image((proc_preview * 255).astype('uint8'), caption="Preprocessed canvas (128x512)")
-            except Exception:
-                pass
-
-            if show_beams:
-                with st.spinner("Running fusion inference..."):
-                    fused, online_beams, offline_beams, online_log_probs, offline_log_probs = predict(stroke_list, canvas_result.image_data, fusion_weight, return_beams=True)
-                st.write("Top fused hypothesis:")
-                st.success(f"{fused if isinstance(fused,str) else fused[0]}")
-                # Show per-branch beams in Diagnostics
+        if canvas_result is not None and canvas_result.json_data is not None:
+            strokes = canvas_result.json_data["objects"]
+            stroke_list = []
+            for obj in strokes:
+                if obj.get("type") == "path":
+                    path = obj.get("path", [])
+                    if isinstance(path, list) and len(path) > 0:
+                        stroke_list.append({"path": path})
+            if stroke_list:
+                # Show preprocessed canvas preview in Diagnostics
                 try:
-                    diag.markdown("**Online beams (top-5)**")
-                    for hyp, score in online_beams[:5]:
-                        diag.write(f"{hyp} — {score:.4f}")
-                    diag.markdown("**Offline beams (top-5)**")
-                    for hyp, score in offline_beams[:5]:
-                        diag.write(f"{hyp} — {score:.4f}")
+                    pil_preview = Image.fromarray(canvas_result.image_data).convert('L')
+                    proc_preview = preprocess_image_from_pil(pil_preview, image_size=(128,512), augment=False, binarize=True)
+                    diag.image((proc_preview * 255).astype('uint8'), caption="Preprocessed canvas (128x512)")
                 except Exception:
                     pass
-            else:
-                with st.spinner("Running fusion inference..."):
-                    pred = predict(stroke_list, canvas_result.image_data, fusion_weight, return_beams=False)
-                st.success(f"Prediction: **{pred}**")
-    # when no strokes, don't show a notification to avoid clutter
+
+                if show_beams:
+                    with st.spinner("Running fusion inference..."):
+                        fused, online_beams, offline_beams, online_log_probs, offline_log_probs = predict(stroke_list, canvas_result.image_data, fusion_weight, return_beams=True)
+                    st.write("Top fused hypothesis:")
+                    st.success(f"{fused if isinstance(fused,str) else fused[0]}")
+                    # Show per-branch beams in Diagnostics
+                    try:
+                        diag.markdown("**Online beams (top-5)**")
+                        for hyp, score in online_beams[:5]:
+                            diag.write(f"{hyp} — {score:.4f}")
+                        diag.markdown("**Offline beams (top-5)**")
+                        for hyp, score in offline_beams[:5]:
+                            diag.write(f"{hyp} — {score:.4f}")
+                    except Exception:
+                        pass
+                else:
+                    with st.spinner("Running fusion inference..."):
+                        pred = predict(stroke_list, canvas_result.image_data, fusion_weight, return_beams=False)
+                    st.success(f"Prediction: **{pred}**")
+        # when no strokes, don't show a notification to avoid clutter
 
 # -------------------- Upload run handler --------------------
 if run_button:
-    if uploaded_file is None:
-        st.warning("Please upload an image first.")
+    if not uploaded_files:
+        st.warning("Please upload at least one image.")
     else:
         from io import BytesIO
         from pathlib import Path
         import time
+        import json
 
-        image_bytes = uploaded_file.getvalue()
-        pil = Image.open(BytesIO(image_bytes)).convert('L')
+        all_results = []          # collect results from all files
 
-        out_dir = project_root / "debug_segments" / f"run_{int(time.time())}"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # Process each file
+        for file_idx, uploaded_file in enumerate(uploaded_files):
+            st.markdown(f"---\n### Image {file_idx+1}")
 
-        # segmentation
-        reader = get_easyocr_reader()
-        crops_meta = []
-        if reader is None:
-            diag.info("EasyOCR not available — using horizontal projection segmentation")
-            from scripts.segment_with_craft import horizontal_projection_segment
-            img_np = np.array(pil).astype(np.float32) / 255.0
-            crops_meta = horizontal_projection_segment(img_np, out_dir, expand=8, min_area=100)
-            # Filter out blank / tiny crops
-            filtered = []
-            for e in crops_meta:
-                try:
-                    p = Path(e['path'])
-                    im = Image.open(p).convert('L')
-                    if is_blank_crop(im):
+            image_bytes = uploaded_file.getvalue()
+            pil = Image.open(BytesIO(image_bytes)).convert('L')
+
+            out_dir = project_root / "debug_segments" / f"run_{int(time.time())}_{file_idx}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # ----- Segmentation -----
+            reader = get_easyocr_reader()
+            crops_meta = []
+            if reader is None:
+                diag.info("EasyOCR not available — using horizontal projection segmentation")
+                from scripts.segment_with_craft import horizontal_projection_segment
+                img_np = np.array(pil).astype(np.float32) / 255.0
+                crops_meta = horizontal_projection_segment(img_np, out_dir, expand=8, min_area=100)
+                # Filter out blank / tiny crops
+                filtered = []
+                for e in crops_meta:
+                    try:
+                        p = Path(e['path'])
+                        im = Image.open(p).convert('L')
+                        if is_blank_crop(im):
+                            continue
+                        filtered.append(e)
+                    except Exception:
                         continue
-                    filtered.append(e)
-                except Exception:
-                    continue
-            crops_meta = filtered
-        else:
-            diag.info("Using EasyOCR for segmentation")
-            results = reader.readtext(np.array(pil), detail=1)
-            used = 0
-            for (bbox, text, conf) in results:
-                xs = np.array([p[0] for p in bbox])
-                ys = np.array([p[1] for p in bbox])
-                x0 = int(max(0, np.floor(xs.min()) - 8))
-                x1 = int(min(pil.size[0], np.ceil(xs.max()) + 8))
-                y0 = int(max(0, np.floor(ys.min()) - 8))
-                y1 = int(min(pil.size[1], np.ceil(ys.max()) + 8))
-                crop = pil.crop((x0, y0, x1, y1))
-                # Skip blank / tiny crops
-                if is_blank_crop(crop):
-                    continue
-                out_path = out_dir / f"crop_{used:03d}.png"
-                crop.save(out_path)
-                crops_meta.append({"id": used, "bbox": [x0, y0, x1, y1], "path": str(out_path), "conf": float(conf), "text": text})
-                used += 1
-
-        results = []
-        if not crops_meta:
-            st.warning("No crops found; attempting to run offline model on the full image.")
-            if offline_model is None:
-                st.error("Offline model not loaded — cannot run image inference.")
+                crops_meta = filtered
             else:
-                proc = preprocess_image_from_pil(pil if not invert_images else ImageOps.invert(pil), image_size=(128,512), augment=False, binarize=True)
-                tensor = torch.tensor(proc, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    logits = offline_model(tensor)
-                    decoded = offline_model.decode_beam_search(logits, alphabet=offline_vocab, beam_width=BEAM_WIDTH)
-                    best_text, best_conf = decoded[0] if decoded else ("", -1.0)
-                st.markdown(f"**Full-image prediction:** {best_text} (conf={best_conf:.3f})")
-                results.append({"id": 0, "path": "full_image", "text": best_text, "conf": float(best_conf)})
-        else:
-            st.markdown(f"### Found {len(crops_meta)} crops — running per-crop inference")
-            from preprocessing.inference_preprocess import try_preprocess_variants, select_best_candidate
-            for entry in crops_meta:
-                crop_path = Path(entry["path"])
-                pil_crop = Image.open(crop_path).convert('L')
-                if invert_images:
-                    pil_crop = ImageOps.invert(pil_crop)
-                candidates = try_preprocess_variants(pil_crop)
+                diag.info("Using EasyOCR for segmentation")
+                results_ocr = reader.readtext(np.array(pil), detail=1)
+                used = 0
+                for (bbox, text, conf) in results_ocr:
+                    xs = np.array([p[0] for p in bbox])
+                    ys = np.array([p[1] for p in bbox])
+                    x0 = int(max(0, np.floor(xs.min()) - 8))
+                    x1 = int(min(pil.size[0], np.ceil(xs.max()) + 8))
+                    y0 = int(max(0, np.floor(ys.min()) - 8))
+                    y1 = int(min(pil.size[1], np.ceil(ys.max()) + 8))
+                    crop = pil.crop((x0, y0, x1, y1))
+                    if is_blank_crop(crop):
+                        continue
+                    out_path = out_dir / f"crop_{used:03d}.png"
+                    crop.save(out_path)
+                    crops_meta.append({"id": used, "bbox": [x0, y0, x1, y1], "path": str(out_path), "conf": float(conf), "text": text})
+                    used += 1
+
+            # ----- Run inference on crops or full image -----
+            results = []
+            if not crops_meta:
+                st.warning("No crops found; attempting to run offline model on the full image.")
                 if offline_model is None:
-                    st.error("Offline model not loaded — cannot run crop inference.")
-                    break
-                best = select_best_candidate(offline_model, offline_vocab, candidates, device=device, beam_width=BEAM_WIDTH)
-                st.image(str(crop_path), width=400)
-                pred_text = best.get('text','')
-                st.markdown(f"**{pred_text}** — conf={best.get('conf',-1.0):.3f} (method={best.get('method')} invert={best.get('invert')})")
-                # Show raw repr and candidate list for debugging (sanitized to avoid circular refs)
-                with st.expander("Prediction details"):
-                    safe_candidates = []
-                    for r in best.get('results', []):
-                        safe_candidates.append({
-                            'method': r.get('method'),
-                            'invert': bool(r.get('invert')),
-                            'text': r.get('text'),
-                            'conf': float(r.get('conf', -1.0)),
-                        })
-                    st.write({'repr': repr(pred_text), 'candidates': safe_candidates})
-                results.append({"id": entry['id'], "path": str(crop_path), "text": best.get('text',''), "conf": float(best.get('conf',-1.0)), "method": best.get('method'), "invert": best.get('invert')})
+                    st.error("Offline model not loaded — cannot run image inference.")
+                else:
+                    proc = preprocess_image_from_pil(pil if not invert_images else ImageOps.invert(pil), image_size=(128,512), augment=False, binarize=True)
+                    tensor = torch.tensor(proc, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        logits = offline_model(tensor)
+                        decoded = offline_model.decode_beam_search(logits, alphabet=offline_vocab, beam_width=BEAM_WIDTH)
+                        best_text, best_conf = decoded[0] if decoded else ("", -1.0)
+                    st.markdown(f"**Full-image prediction:** {best_text} (conf={best_conf:.3f})")
+                    results.append({"id": 0, "path": "full_image", "text": best_text, "conf": float(best_conf)})
+            else:
+                st.markdown(f"### Found {len(crops_meta)} crops — running per-crop inference")
+                from preprocessing.inference_preprocess import try_preprocess_variants, select_best_candidate
+                for entry in crops_meta:
+                    crop_path = Path(entry["path"])
+                    pil_crop = Image.open(crop_path).convert('L')
+                    if invert_images:
+                        pil_crop = ImageOps.invert(pil_crop)
+                    candidates = try_preprocess_variants(pil_crop)
+                    if offline_model is None:
+                        st.error("Offline model not loaded — cannot run crop inference.")
+                        break
+                    best = select_best_candidate(offline_model, offline_vocab, candidates, device=device, beam_width=BEAM_WIDTH)
+                    st.image(str(crop_path), width=400)
+                    pred_text = best.get('text','')
+                    st.markdown(f"**{pred_text}** — conf={best.get('conf',-1.0):.3f} (method={best.get('method')} invert={best.get('invert')})")
+                    with st.expander("Prediction details"):
+                        safe_candidates = []
+                        for r in best.get('results', []):
+                            safe_candidates.append({
+                                'method': r.get('method'),
+                                'invert': bool(r.get('invert')),
+                                'text': r.get('text'),
+                                'conf': float(r.get('conf', -1.0)),
+                            })
+                        st.write({'repr': repr(pred_text), 'candidates': safe_candidates})
+                    results.append({"id": entry['id'], "path": str(crop_path), "text": best.get('text',''), "conf": float(best.get('conf',-1.0)), "method": best.get('method'), "invert": best.get('invert')})
 
-        # Save results and provide download
-        if results:
-            out_json = out_dir / "results.json"
-            import json
-            with open(out_json, 'w', encoding='utf-8') as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-            with open(out_json, 'rb') as f:
-                st.download_button("Download results.json", f, file_name="results.json")
+            if results:
+                # Concatenate all crop texts into one document text
+                full_text = ' '.join([r['text'] for r in results])
+                # Store in session state
+                st.session_state.doc_texts[uploaded_file.name] = full_text
+                st.session_state.doc_names = [f.name for f in uploaded_files]  # update list
+            
+                # Save per‑file results to its own JSON (optional)
+                out_json = out_dir / "results.json"
+                with open(out_json, 'w', encoding='utf-8') as f:
+                    json.dump(results, f, ensure_ascii=False, indent=2)
+                # Add to global collection
+                all_results.append({
+                    "file_index": file_idx,
+                    "file_name": uploaded_file.name,
+                    "results": results
+                })
 
+        # ----- After processing all files, offer combined download -----
+        if all_results:
+            combined_json = project_root / "debug_segments" / f"combined_{int(time.time())}.json"
+            with open(combined_json, 'w', encoding='utf-8') as f:
+                json.dump(all_results, f, ensure_ascii=False, indent=2)
+            with open(combined_json, 'rb') as f:
+                st.download_button("Download all results (combined JSON)", f, file_name="combined_results.json")
 
+# ----- Compare Documents (MinHash + LSH) -----
+if uploaded_files:
+    # Show Compare button if we have at least 2 files
+    if len(uploaded_files) >= 2:
+        compare_col1, compare_col2 = st.columns([1, 4])
+        with compare_col1:
+            compare_button = st.button("🔍 Compare Documents", use_container_width=True)
+        with compare_col2:
+            if compare_button:
+                # Check if we have transcriptions for all uploaded files
+                missing = [f.name for f in uploaded_files if f.name not in st.session_state.doc_texts]
+                if missing:
+                    st.warning(f"Please run recognition first for: {', '.join(missing)}")
+                else:
+                    # Build similarity index
+                    index = TextSimilarityIndex(threshold=0.3, num_perm=128, shingle_size=3)
+                    for fname in st.session_state.doc_names:
+                        text = st.session_state.doc_texts.get(fname, '')
+                        if text.strip():
+                            index.add_document(text, metadata={'filename': fname})
+                    
+                    if len(index.minhashes) < 2:
+                        st.info("Need at least two documents with text to compare.")
+                    else:
+                        st.subheader("Document Similarity (Jaccard > 0.3)")
+                        
+                        # Compute pairwise similarities
+                        docs = list(index.minhashes.keys())
+                        sim_matrix = []
+                        for i, doc_id1 in enumerate(docs):
+                            row = []
+                            for j, doc_id2 in enumerate(docs):
+                                if i == j:
+                                    sim = 1.0
+                                else:
+                                    sim = index.minhashes[doc_id1].jaccard(index.minhashes[doc_id2])
+                                row.append(round(sim, 3))
+                            sim_matrix.append(row)
+                        
+                        # Show as a pandas DataFrame
+                        try:
+                            import pandas as pd
+                            df = pd.DataFrame(sim_matrix, 
+                                              index=[index.metadata[d]['filename'] for d in docs],
+                                              columns=[index.metadata[d]['filename'] for d in docs])
+                            st.dataframe(df.style.background_gradient(cmap='Blues', axis=None))
+                        except ImportError:
+                            # Fallback: simple table
+                            st.write("Similarity matrix (values > 0.3 highlighted):")
+                            for i, d1 in enumerate(docs):
+                                row_str = []
+                                for j, d2 in enumerate(docs):
+                                    sim = sim_matrix[i][j]
+                                    if sim > 0.3 and i != j:
+                                        row_str.append(f"**{sim:.2f}**")
+                                    else:
+                                        row_str.append(f"{sim:.2f}")
+                                st.write(f"{index.metadata[d1]['filename']}: " + " | ".join(row_str))
+                        
+                        # Show top matches per document
+                        st.subheader("Top matches per document")
+                        for doc_id in docs:
+                            fname = index.metadata[doc_id]['filename']
+                            # Query with the same document but exclude itself
+                            results = index.query(index.metadata[doc_id]['text'], top_k=3)
+                            # Filter out self
+                            matches = [(idx, sim, meta) for idx, sim, meta in results if idx != doc_id]
+                            if matches:
+                                st.write(f"**{fname}** → " + ", ".join([f"{meta['filename']} ({sim:.2f})" for idx, sim, meta in matches[:3]]))
+                            else:
+                                st.write(f"**{fname}** → No close matches")
