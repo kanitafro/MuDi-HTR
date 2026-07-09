@@ -7,6 +7,11 @@
 
 MuDi-HTR is a research-oriented framework for combining online stroke trajectories and offline handwritten image features for robust handwriting text recognition.
 
+## Contributors
+- Kanita Tafro ([@kanitafro](https://github.com/kanitafro))
+- Džana Kopić ([@dzankk](https://github.com/dzankk))
+
+
 ## Repository structure
 
 ```
@@ -31,6 +36,8 @@ MuDi-HTR is a research-oriented framework for combining online stroke trajectori
 │   ├── __init__.py
 │   └── streamlit_app.py
 ├── docs/
+│   ├── MuDi-HTR poster.png
+│   └── report.pdf
 ├── experiments/
 │   ├── figures
 │   ├── notebooks
@@ -145,11 +152,8 @@ pip install -r requirements.txt
     python -m scripts.train_offline
     ```
 
-## Fusion
-Fusion components combining online/offline signals are in `models/fusion/`.
-
 ## Demo (Streamlit)
-Run the interactive demo from isnide `demo/` folder with:
+Run the interactive demo from inside `demo/` folder with:
 ```
 streamlit run app.py
 ```
@@ -158,11 +162,99 @@ streamlit run app.py
 Approximate similarity utilities using MinHash are in `cda_similarity/`.
 
 ## Results
-Store experiment outputs under `experiments/results/` and visualizations under `experiments/figures/`.
+
+### Online Branch
+
+**Method 1: Transfer Learning from DIDI**
+- **Validation CER:** 0.5231
+- **Test CER:** 0.8484
+- **Test WER:** 1.000
+- Model consistently predicted prefix `"OCRCSR"` + random characters
+- Catastrophic forgetting due to domain mismatch between GraphViz and English text
+
+**Method 2: Training from Scratch (Original)**
+- **Best validation CER:** 0.9587
+- **Test WER:** 1.000
+- Model predicted `"OCRCSR"` prefix + random characters
+- LR scheduler reduced LR to zero by epoch 22
+
+**Method 3: Training from Scratch (Improved CNN-BiLSTM)**
+- **Best validation CER:** 0.9592
+- **Test CER:** 0.9600
+- **Test WER:** 1.000
+- Training loss dropped to 0.326 but validation CER stuck at ~0.96
+- LR scheduler reduced LR to zero by epoch 31
+
+**Method 4: ISGL Dataset (Final)**
+- **Raw coordinates:** Validation CER consistently >60% (failed)
+- **Derivative features (6 features):**
+  - **Best validation CER:** 0.4640
+  - **Best validation WER:** 0.4842
+  - **Test CER:** 0.4725
+  - **Test WER:** 0.4928
+- Key features: Δx, Δy, log(r), angle, pen_up, pen_down
+- Data augmentation: scaling (0.9–1.1), rotation (±8°), noise
+- LR scheduler with patience 15 prevented premature LR drops
+
+---
+
+### Offline Branch
+
+**Synthetic Pretraining (OpenHand-Synth)**
+- **Best validation CER:** 0.4732
+- **Best validation WER:** 0.6954
+- Synthetic data alone insufficient for real-world generalization
+
+**Intermediate Transfer (IAM FineVision)**
+- **Best validation CER:** 0.7700
+- **Validation WER:** 0.9968
+- Domain gap too severe; complex layouts and unconstrained handwriting
+
+**Fine-Tuning on Real-World Data (Kaggle)**
+- **Best validation CER:** 0.1439
+- **Best validation WER:** 0.4356
+- **Test CER:** 0.1439
+- Training loss: 14.7440 → 0.1960
+- Training CER: 1.0750 → 0.0587
+- Common substitutions: E↔I, P↔R, M↔L
+- Minor spacing errors at word boundaries
+
+---
+
+### MinHash + LSH Similarity Search
+
+**Scalability**
+- Query time scales sublinearly:
+  - 1,000 docs: 2.06 ms
+  - 50,000 docs: 17.84 ms
+- Suitable for real-time applications (<20 ms latency)
+
+**Recall Evaluation**
+- LSH recall at threshold 0.3: **86%**
+- High accuracy with significantly reduced search space
+
+**Threshold Tuning**
+
+| Threshold | Recall | Query Time (ms) |
+|-----------|--------|-----------------|
+| 0.2 | **0.990** | 2.49 |
+| 0.3 | 0.880 | 2.16 |
+| 0.4 | 0.180 | 1.85 |
+| 0.5 | 0.180 | 1.79 |
+
+**Optimal Configuration:** Threshold 0.2, 128 permutations, 3-character shingles
+
+---
+
+### Summary
+
+| Branch | Best Test CER | Best Test WER | Key Finding |
+|--------|---------------|---------------|-------------|
+| Online (ISGL) | **0.473** | 0.493 | Derivative features essential; raw coords failed |
+| Offline (CRNN) | **0.144** | 0.436 | Discriminative fine-tuning critical for adaptation |
+| MinHash + LSH | N/A | N/A | 99% recall, sub-20 ms latency on 50k docs |
+
 
 ## License
 This project is licensed under the [MIT License](LICENSE).
 
-## Contributors
-- [@kanitafro](https://github.com/kanitafro)
-- [@dzankk](https://github.com/dzankk)
