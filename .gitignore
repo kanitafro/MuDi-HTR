@@ -224,4 +224,5 @@ data/raw/
 data/processed/
 checkpoints/
 runs/
+debug_segments/
 _inspect_finevision_samples.py

@@ -1,3 +1,4 @@
+# scripts/batch_segment_and_collect.py
 """Batch-segment images in a folder and collect low-confidence crops.
 
 Usage:

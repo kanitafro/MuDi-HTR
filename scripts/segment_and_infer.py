@@ -1,3 +1,4 @@
+# scripts/segment_and_infer.py
 """Segment a page image into crops and run offline OCR on each crop.
 
 Usage:

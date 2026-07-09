@@ -1,3 +1,4 @@
+# scripts/segment_with_craft.py
 """Segment images into text crops using EasyOCR (preferred) with a simple fallback.
 
 Outputs:
